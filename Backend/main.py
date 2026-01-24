@@ -638,6 +638,35 @@ async def upload_capture_media(capture_id: str, file: UploadFile = File(...)) ->
         return {"status": "error", "error": str(e)}
 
 
+@app.post("/query-upload/{query_id}")
+async def upload_query_image(query_id: str, file: UploadFile = File(...)) -> Dict[str, Any]:
+    """Upload an image to be used with a query. Returns URL to reference in WebSocket query."""
+    try:
+        if storage is None:
+            raise RuntimeError("google-cloud-storage is not installed")
+
+        bucket_name = "reality-hack-2026-raw-media"
+        object_name = f"queries/{query_id}/image.jpg"
+
+        content = await file.read()
+        content_type = file.content_type or "image/jpeg"
+
+        def _upload() -> None:
+            client = storage.Client(project=os.environ.get("GCP_PROJECT_ID"))
+            bucket = client.bucket(bucket_name)
+            blob = bucket.blob(object_name)
+            blob.upload_from_string(content, content_type=content_type)
+
+        await asyncio.to_thread(_upload)
+
+        url = f"https://storage.googleapis.com/{bucket_name}/{object_name}"
+        logger.info("[QUERY_DATA] Uploaded query image query_id=%s url=%s", query_id, url)
+        return {"status": "success", "url": url, "queryId": query_id}
+    except Exception as e:
+        logger.exception("Query image upload failed query_id=%s", query_id)
+        return {"status": "error", "error": str(e)}
+
+
 @app.get("/memories/{user_id}/{date}")
 async def get_memories_for_date(user_id: str, date: str) -> Dict[str, Any]:
     try:
@@ -1175,7 +1204,7 @@ def _serialize_capture(doc: Dict[str, Any]) -> Dict[str, Any]:
 # UNITY QUERY PIPELINE
 # =============================================================================
 
-async def _process_unity_query(user_id: str, query_text: str, date_range: Optional[Dict], include_faces: bool, max_images: int) -> Dict[str, Any]:
+async def _process_unity_query(user_id: str, query_text: str, date_range: Optional[Dict], include_faces: bool, max_images: int, user_image: Optional[str] = None) -> Dict[str, Any]:
     profile = await repo.get_user_profile(user_id)
     contacts_doc = await repo.get_contacts(user_id)
     
@@ -1286,7 +1315,12 @@ async def _process_unity_query(user_id: str, query_text: str, date_range: Option
     )
     
     try:
-        answer_result = await _call_gemini_text(answer_prompt)
+        # Use vision model if user provided an image with their query
+        if user_image:
+            logger.info("[QUERY_DATA] Processing query with user-provided image")
+            answer_result = await _call_gemini_with_image(answer_prompt, user_image)
+        else:
+            answer_result = await _call_gemini_text(answer_prompt)
     except Exception as e:
         logger.exception("Query answer generation failed")
         return {"ok": False, "error": "answer_generation_failed", "detail": str(e)}
@@ -1318,9 +1352,13 @@ async def _process_unity_query(user_id: str, query_text: str, date_range: Option
 # =============================================================================
 # /ws/query/{user_id} - Dedicated Query WebSocket
 # =============================================================================
+# Image Flow (optional):
+#   1. Client uploads image: POST /query-upload/{query_id} → returns {url}
+#   2. Client sends query: {"text": "...", "imageURL": url, ...}
+#
 # Response Flow:
-#   1. Client sends: {"text": "query", "dateRange": {...}, "includeFaces": true}
-#   2. Server processes with Gemini
+#   1. Client sends: {"text": "query", "imageURL": "https://...", "dateRange": {...}}
+#   2. Server processes with Gemini (vision model if imageURL provided)
 #   3. Server sends back ONE of:
 #      - {"type": "response", "ok": true, "answer": "...", ...}  (final answer)
 #      - {"type": "clarification_needed", "ok": true, "message": "..."}  (needs more info)
@@ -1352,18 +1390,25 @@ async def ws_query(websocket: WebSocket, user_id: str) -> None:
                 date_range = req.get("dateRange")
                 include_faces = req.get("includeFaces", True)
                 max_images = min(req.get("maxImages", DEFAULT_QUERY_IMAGES), MAX_QUERY_IMAGES)
+                image_url = req.get("imageURL")  # Optional: URL from POST /query-upload
+                
+                # Download image if URL provided
+                user_image = None
+                if image_url:
+                    user_image = await _download_image_as_base64(image_url)
                 
                 # Log incoming query content
                 logger.info(
-                    "[QUERY_DATA] user=%s query=%s dateRange=%s includeFaces=%s",
+                    "[QUERY_DATA] user=%s query=%s dateRange=%s includeFaces=%s imageURL=%s",
                     user_id,
                     query_text[:300],
                     json.dumps(date_range) if date_range else "none",
-                    include_faces
+                    include_faces,
+                    image_url[:80] if image_url else "none"
                 )
                 
                 start_time = time.time()
-                result = await _process_unity_query(user_id, query_text, date_range, include_faces, max_images)
+                result = await _process_unity_query(user_id, query_text, date_range, include_faces, max_images, user_image)
                 elapsed_ms = (time.time() - start_time) * 1000
                 
                 # Log response summary

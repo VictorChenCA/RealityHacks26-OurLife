@@ -1,41 +1,81 @@
 # Query Data Documentation
 
-This document describes the WebSocket endpoint for querying memories with natural language.
+This document describes how clients query the memory system via HTTP and WebSocket.
 
 ---
 
 ## Overview
 
-Clients connect via WebSocket to **`/ws/query/{user_id}`** and send natural language queries about the user's memories. Gemini interprets these queries, fetches relevant data, and returns helpful responses.
+Clients query memories through two mechanisms:
+1. **HTTP Upload** - `POST /query-upload/{query_id}` for optional image attachment
+2. **WebSocket** - `/ws/query/{user_id}` for sending queries and receiving responses
 
 > **Note:** Legacy `/ws/unity/{user_id}` endpoint only handles `fetch_daily_memories` requests. Use `/ws/query` for all query operations.
 
 ---
 
-## Query Flow
+## Endpoints
+
+### 1. Image Upload: `POST /query-upload/{query_id}`
+
+Upload an image to include with your query (optional).
+
+**Request:**
+```
+POST /query-upload/{query_id}
+Content-Type: multipart/form-data
+
+file: <binary image data>
+```
+
+**Response:**
+```json
+{
+  "status": "success",
+  "url": "https://storage.googleapis.com/reality-hack-2026-raw-media/queries/{query_id}/image.jpg",
+  "queryId": "abc-123-def-456"
+}
+```
+
+**Error Response:**
+```json
+{
+  "status": "error",
+  "error": "upload failed: <details>"
+}
+```
+
+---
+
+### 2. Query WebSocket: `/ws/query/{user_id}`
+
+Real-time connection for sending queries and receiving responses.
+
+#### Connection
+```
+WebSocket: wss://{host}/ws/query/{user_id}
+```
+
+#### Query Flow
 
 ```
-Client                          Backend                         Gemini
-    |                              |                               |
-    |-- {"text":"query",...} ----->|                               |
-    |                              |-- Build context -------------->|
-    |                              |   (profile, contacts,         |
-    |                              |    recent summaries)          |
-    |                              |                               |
-    |                              |<-- Decision: need more data? -|
-    |                              |                               |
-    |                              |   [If yes: fetch internally]  |
-    |                              |-- Additional context -------->|
-    |                              |                               |
-    |                              |<-- Final response ------------|
-    |<-- {"type":"response",...} --|                               |
-    |                              |                               |
-    |   [OR if clarification needed]                               |
-    |<-- {"type":"clarification_needed",...} --|                   |
-    |                              |                               |
-    |-- {"text":"follow-up"} ----->|  (client answers clarification)
-    |                              |-- Process follow-up --------->|
-    |<-- {"type":"response",...} --|                               |
+Client                          Backend                      Cloud Storage
+   |                               |                              |
+   |-- POST /query-upload/{id} --->|                              |
+   |   (optional image)            |-- Upload to GCS ------------>|
+   |<-- {"status":"success",...} --|                              |
+   |                               |                              |
+   |== WebSocket /ws/query/{user_id} ==|                          |
+   |                               |                              |
+   |-- {"text":"...", "imageURL":...} ->|                         |
+   |                               |-- Gemini Processing          |
+   |                               |                              |
+   |<-- {"type":"response",...} ---|  (final answer)              |
+   |                               |                              |
+   |   [OR if clarification needed]|                              |
+   |<-- {"type":"clarification_needed",...} --|                   |
+   |-- {"text":"follow-up"} ------>|                              |
+   |<-- {"type":"response",...} ---|                              |
 ```
 
 ---
@@ -50,7 +90,8 @@ WebSocket: wss://{host}/ws/query/{user_id}
 ### Query Request
 ```json
 {
-  "text": "Who did I meet yesterday at the coffee shop?",
+  "text": "Who is this person?",
+  "imageURL": "https://storage.googleapis.com/reality-hack-2026-raw-media/queries/abc-123/image.jpg",
   "dateRange": {
     "start": "2026-01-23",
     "end": "2026-01-24"
@@ -63,9 +104,31 @@ WebSocket: wss://{host}/ws/query/{user_id}
 | Field | Required | Description |
 |-------|----------|-------------|
 | `text` | Yes | Natural language query |
+| `imageURL` | No | URL from `POST /query-upload` (enables vision model) |
 | `dateRange` | No | Limit search to date range `{start, end}` |
 | `includeFaces` | No | Include face images in response (default: true) |
 | `maxImages` | No | Max images to attach (default: 8, max: 16) |
+
+### Query with Image Examples
+```json
+// Ask about a person in a photo
+{
+  "text": "Who is this person? Do I know them?",
+  "imageURL": "https://storage.googleapis.com/.../queries/q1/image.jpg"
+}
+
+// Ask about a location
+{
+  "text": "Have I been to this place before?",
+  "imageURL": "https://storage.googleapis.com/.../queries/q2/image.jpg"
+}
+
+// Ask about an object
+{
+  "text": "Where did I leave this?",
+  "imageURL": "https://storage.googleapis.com/.../queries/q3/image.jpg"
+}
+```
 
 ### Follow-up (after clarification)
 ```json
