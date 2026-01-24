@@ -1119,18 +1119,32 @@ async def ws_ios(websocket: WebSocket, user_id: str) -> None:
             try:
                 msg = json.loads(raw)
             except json.JSONDecodeError:
+                logger.warning("[SEND_DATA] user=%s INVALID_JSON raw=%s", user_id, raw[:500])
                 await manager.send_json(websocket, {"ok": False, "error": "invalid_json"})
                 continue
 
             try:
-                # Log incoming capture content
+                # Log raw message structure for debugging
+                msg_keys = list(msg.keys())
+                transcription = msg.get("transcription") or ""
+                photo_url = msg.get("photoURL") or ""
+                audio_url = msg.get("audioURL") or ""
+                
                 logger.info(
-                    "[SEND_DATA] user=%s type=%s transcription=%s photoURL=%s",
+                    "[SEND_DATA] user=%s type=%s keys=%s transcription_len=%d photo=%s audio=%s",
                     user_id,
                     msg.get("type"),
-                    (msg.get("transcription") or "")[:200],
-                    msg.get("photoURL", "none")[:100] if msg.get("photoURL") else "none"
+                    msg_keys,
+                    len(transcription),
+                    "yes" if photo_url else "no",
+                    "yes" if audio_url else "no"
                 )
+                
+                # Log transcription content if present
+                if transcription:
+                    logger.info("[SEND_DATA] user=%s transcription_preview=%s", user_id, transcription[:300])
+                else:
+                    logger.warning("[SEND_DATA] user=%s NO_TRANSCRIPTION in message", user_id)
                 
                 if msg.get("type") != "memory_capture":
                     await manager.send_json(
