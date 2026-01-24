@@ -28,7 +28,9 @@ namespace RealityHacks.Core
 
         private void Start()
         {
+            LogStartupBanner();
             InitializeComponents();
+            ValidateConfiguration();
             SubscribeToEvents();
 
             if (autoConnectOnStart)
@@ -37,8 +39,17 @@ namespace RealityHacks.Core
             }
         }
 
+        private void LogStartupBanner()
+        {
+            Debug.Log("===========================================");
+            Debug.Log("[RealityHacks] Query System Starting...");
+            Debug.Log("===========================================");
+        }
+
         private void InitializeComponents()
         {
+            Debug.Log("[RealityHacks] Initializing components...");
+            
             if (webSocketClient == null)
                 webSocketClient = GetComponentInChildren<QueryWebSocketClient>();
             if (microphoneManager == null)
@@ -51,6 +62,77 @@ namespace RealityHacks.Core
                 micStatusIndicator = GetComponentInChildren<MicrophoneStatusIndicator>();
             if (speechToText == null)
                 speechToText = GetComponentInChildren<SpeechToTextHandler>();
+        }
+
+        private void ValidateConfiguration()
+        {
+            Debug.Log("[RealityHacks] === CONFIGURATION STATUS ===");
+            
+            // WebSocket Client
+            if (webSocketClient != null)
+            {
+                Debug.Log($"[RealityHacks] ✓ WebSocketClient: FOUND");
+                Debug.Log($"[RealityHacks]   Server: {webSocketClient.GetServerInfo()}");
+            }
+            else
+            {
+                Debug.LogError("[RealityHacks] ✗ WebSocketClient: MISSING - Cannot send queries!");
+            }
+
+            // Microphone Manager
+            if (microphoneManager != null)
+            {
+                Debug.Log($"[RealityHacks] ✓ MicrophoneManager: FOUND");
+                Debug.Log($"[RealityHacks]   Mic Available: {microphoneManager.IsMicrophoneAvailable}");
+            }
+            else
+            {
+                Debug.LogError("[RealityHacks] ✗ MicrophoneManager: MISSING - Cannot record audio!");
+            }
+
+            // Input Manager
+            if (inputManager != null)
+            {
+                Debug.Log($"[RealityHacks] ✓ VRInputManager: FOUND");
+                Debug.Log($"[RealityHacks]   Input Actions Configured: {inputManager.AreActionsConfigured()}");
+            }
+            else
+            {
+                Debug.LogError("[RealityHacks] ✗ VRInputManager: MISSING - No controller input!");
+            }
+
+            // Debug Terminal
+            if (debugTerminal != null)
+            {
+                Debug.Log($"[RealityHacks] ✓ DebugTerminal: FOUND");
+            }
+            else
+            {
+                Debug.LogWarning("[RealityHacks] ⚠ DebugTerminal: MISSING - No visual logging");
+            }
+
+            // Mic Status Indicator
+            if (micStatusIndicator != null)
+            {
+                Debug.Log($"[RealityHacks] ✓ MicStatusIndicator: FOUND");
+            }
+            else
+            {
+                Debug.LogWarning("[RealityHacks] ⚠ MicStatusIndicator: MISSING - No mic status UI");
+            }
+
+            // Speech-to-Text
+            if (speechToText != null)
+            {
+                Debug.Log($"[RealityHacks] ✓ SpeechToText: FOUND");
+                Debug.Log($"[RealityHacks]   API Key Configured: {speechToText.IsApiKeyConfigured()}");
+            }
+            else
+            {
+                Debug.LogWarning("[RealityHacks] ⚠ SpeechToText: MISSING - Will send test queries instead");
+            }
+
+            Debug.Log("[RealityHacks] ================================");
         }
 
         private void SubscribeToEvents()
@@ -93,32 +175,46 @@ namespace RealityHacks.Core
 
         private void HandleRightTriggerPressed()
         {
+            Debug.Log("[QueryController] >>> A BUTTON PRESSED - HandleRightTriggerPressed called");
+            
             if (isProcessingQuery)
             {
+                Debug.Log("[QueryController] Blocked: Already processing query");
                 LogToTerminal("[STATUS] Already processing a query, please wait...");
                 return;
             }
 
             if (!webSocketClient.IsConnected)
             {
+                Debug.Log("[QueryController] Not connected, attempting to connect...");
                 LogToTerminal("[WARNING] Not connected to server. Attempting to connect...");
                 webSocketClient.Connect();
                 return;
             }
 
+            Debug.Log("[QueryController] Starting microphone recording...");
             microphoneManager.StartRecording();
         }
 
         private void HandleRightTriggerReleased()
         {
+            Debug.Log("[QueryController] >>> A BUTTON RELEASED - HandleRightTriggerReleased called");
+            
             if (microphoneManager.IsRecording)
             {
+                Debug.Log("[QueryController] Stopping microphone recording...");
                 microphoneManager.StopRecording();
+            }
+            else
+            {
+                Debug.Log("[QueryController] Microphone was not recording");
             }
         }
 
         private void HandleLeftJoystickHeld()
         {
+            Debug.Log("[QueryController] >>> B BUTTON PRESSED - HandleLeftJoystickHeld called");
+            
             if (debugTerminal != null)
             {
                 debugTerminal.Toggle();

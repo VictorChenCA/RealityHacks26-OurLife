@@ -7,18 +7,17 @@ using UnityEngine.Networking;
 namespace RealityHacks.Audio
 {
     [Serializable]
-    public class WhisperResponse
+    public class ElevenLabsSTTResponse
     {
         public string text;
     }
 
     public class SpeechToTextHandler : MonoBehaviour
     {
-        [Header("Whisper API Configuration")]
-        [SerializeField] private string apiEndpoint = "https://api.openai.com/v1/audio/transcriptions";
+        [Header("ElevenLabs STT Configuration")]
+        [SerializeField] private string apiEndpoint = "https://api.elevenlabs.io/v1/speech-to-text";
         [SerializeField] private string apiKey = ""; // Set via SetApiKey() or inspector (not recommended for production)
-        [SerializeField] private string model = "whisper-1";
-        [SerializeField] private string language = "en";
+        [SerializeField] private string model = "scribe_v1";
 
         public event Action<string> OnTranscriptionComplete;
         public event Action<string> OnTranscriptionError;
@@ -28,6 +27,11 @@ namespace RealityHacks.Audio
 
         public bool IsProcessing => isProcessing;
 
+        public bool IsApiKeyConfigured()
+        {
+            return !string.IsNullOrEmpty(apiKey);
+        }
+
         public void SetApiKey(string key)
         {
             apiKey = key;
@@ -35,18 +39,23 @@ namespace RealityHacks.Audio
 
         public void TranscribeAudio(byte[] wavData)
         {
+            Debug.Log($"[STT] TranscribeAudio called with {wavData?.Length ?? 0} bytes");
+            
             if (isProcessing)
             {
+                Debug.LogWarning("[STT] Already processing audio - rejecting request");
                 OnTranscriptionError?.Invoke("Already processing audio");
                 return;
             }
 
             if (string.IsNullOrEmpty(apiKey))
             {
+                Debug.LogError("[STT] API key not configured!");
                 OnTranscriptionError?.Invoke("API key not configured");
                 return;
             }
 
+            Debug.Log($"[STT] Starting transcription request to ElevenLabs...");
             StartCoroutine(SendTranscriptionRequest(wavData));
         }
 
@@ -54,37 +63,43 @@ namespace RealityHacks.Audio
         {
             isProcessing = true;
             OnStatusChanged?.Invoke("Transcribing audio...");
+            Debug.Log($"[STT] Sending {wavData.Length} bytes to {apiEndpoint}");
 
             WWWForm form = new WWWForm();
             form.AddBinaryData("file", wavData, "audio.wav", "audio/wav");
-            form.AddField("model", model);
-            form.AddField("language", language);
+            form.AddField("model_id", model);
 
             using (UnityWebRequest request = UnityWebRequest.Post(apiEndpoint, form))
             {
-                request.SetRequestHeader("Authorization", $"Bearer {apiKey}");
+                request.SetRequestHeader("xi-api-key", apiKey);
+                Debug.Log("[STT] Request sent, waiting for response...");
 
                 yield return request.SendWebRequest();
 
                 isProcessing = false;
+                Debug.Log($"[STT] Response received: {request.result}, Code: {request.responseCode}");
 
                 if (request.result == UnityWebRequest.Result.Success)
                 {
                     try
                     {
                         string responseText = request.downloadHandler.text;
-                        WhisperResponse response = JsonUtility.FromJson<WhisperResponse>(responseText);
+                        Debug.Log($"[STT] Raw response: {responseText}");
+                        ElevenLabsSTTResponse response = JsonUtility.FromJson<ElevenLabsSTTResponse>(responseText);
                         
+                        Debug.Log($"[STT] Transcription result: {response.text}");
                         OnStatusChanged?.Invoke("Transcription complete");
                         OnTranscriptionComplete?.Invoke(response.text);
                     }
                     catch (Exception ex)
                     {
+                        Debug.LogError($"[STT] Parse error: {ex.Message}");
                         OnTranscriptionError?.Invoke($"Failed to parse response: {ex.Message}");
                     }
                 }
                 else
                 {
+                    Debug.LogError($"[STT] Request failed: {request.error}, Response: {request.downloadHandler?.text}");
                     OnTranscriptionError?.Invoke($"Request failed: {request.error}");
                 }
             }

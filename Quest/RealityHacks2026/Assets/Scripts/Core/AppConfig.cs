@@ -17,8 +17,8 @@ namespace RealityHacks.Core
         public string userId = "default-user";
 
         [Header("Speech-to-Text Configuration")]
-        [Tooltip("OpenAI API Key for Whisper (leave empty to use local STT)")]
-        public string whisperApiKey = "";
+        [Tooltip("ElevenLabs API Key for STT (leave empty to use local STT)")]
+        public string elevenlabsApiKey = "";
 
         [Header("Input Configuration")]
         [Tooltip("Time in seconds to hold left joystick to toggle debug terminal")]

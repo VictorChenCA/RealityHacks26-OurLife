@@ -1,133 +1,154 @@
 using System;
 using UnityEngine;
-using UnityEngine.XR;
+using UnityEngine.InputSystem;
 
 namespace RealityHacks.Input
 {
+    /// <summary>
+    /// VR Input Manager using Unity Input System for Quest controllers.
+    /// A button = Record, B button = Toggle Menu
+    /// Creates its own input actions at runtime for OpenXR compatibility.
+    /// </summary>
     public class VRInputManager : MonoBehaviour
     {
-        [Header("Input Thresholds")]
-        [SerializeField] private float triggerThreshold = 0.8f;
-        [SerializeField] private float joystickPressHoldTime = 30f;
+        public event Action OnRightTriggerPressed;  // Fired when A pressed (start recording)
+        public event Action OnRightTriggerReleased; // Fired when A released (stop recording)
+        public event Action OnLeftJoystickHeldComplete; // Fired when B pressed (toggle menu)
+        public event Action<float> OnLeftJoystickHoldProgress; // Not used for B button
 
-        public event Action OnRightTriggerPressed;
-        public event Action OnRightTriggerReleased;
-        public event Action OnLeftJoystickHeldComplete;
-        public event Action<float> OnLeftJoystickHoldProgress;
+        private InputAction aButtonAction;
+        private InputAction bButtonAction;
+        private InputAction rightJoystickAction;
 
-        private InputDevice rightController;
-        private InputDevice leftController;
-        private bool rightTriggerWasPressed = false;
-        private bool leftJoystickWasPressed = false;
-        private float leftJoystickHoldTimer = 0f;
-        private bool controllersFound = false;
+        private bool aButtonWasPressed = false;
+        private bool bButtonWasPressed = false;
 
         public bool IsRightTriggerHeld { get; private set; }
         public bool IsLeftJoystickPressed { get; private set; }
+        public Vector2 RightJoystick { get; private set; }
+
+        private void Awake()
+        {
+            // Create input actions with multiple binding paths for OpenXR compatibility
+            aButtonAction = new InputAction("AButton", InputActionType.Button);
+            // Try all possible binding paths for A button
+            aButtonAction.AddBinding("<XRController>{RightHand}/primaryButton");
+            aButtonAction.AddBinding("<XRController>{RightHand}/buttonA");
+            aButtonAction.AddBinding("<OculusTouchController>{RightHand}/primaryButton");
+            aButtonAction.AddBinding("<MetaQuestTouchProControllerOpenXR>{RightHand}/primaryButton");
+            aButtonAction.AddBinding("<QuestProTouchController>{RightHand}/primaryButton");
+            
+            bButtonAction = new InputAction("BButton", InputActionType.Button);
+            // Try all possible binding paths for B button
+            bButtonAction.AddBinding("<XRController>{RightHand}/secondaryButton");
+            bButtonAction.AddBinding("<XRController>{RightHand}/buttonB");
+            bButtonAction.AddBinding("<OculusTouchController>{RightHand}/secondaryButton");
+            bButtonAction.AddBinding("<MetaQuestTouchProControllerOpenXR>{RightHand}/secondaryButton");
+            bButtonAction.AddBinding("<QuestProTouchController>{RightHand}/secondaryButton");
+            
+            // Right joystick for scrolling
+            rightJoystickAction = new InputAction("RightJoystick", InputActionType.Value);
+            rightJoystickAction.AddBinding("<XRController>{RightHand}/thumbstick");
+            rightJoystickAction.AddBinding("<OculusTouchController>{RightHand}/thumbstick");
+            rightJoystickAction.AddBinding("<MetaQuestTouchProControllerOpenXR>{RightHand}/thumbstick");
+
+            Debug.Log("[VRInputManager] Created Input Actions for A and B buttons with multiple bindings");
+            
+            // Log all available devices for debugging
+            foreach (var device in UnityEngine.InputSystem.InputSystem.devices)
+            {
+                Debug.Log($"[VRInputManager] Available device: {device.name} ({device.deviceId})");
+            }
+        }
+
+        private void OnEnable()
+        {
+            aButtonAction?.Enable();
+            bButtonAction?.Enable();
+            rightJoystickAction?.Enable();
+            Debug.Log("[VRInputManager] Input actions enabled");
+        }
+
+        private void OnDisable()
+        {
+            aButtonAction?.Disable();
+            bButtonAction?.Disable();
+            rightJoystickAction?.Disable();
+        }
+
+        private void OnDestroy()
+        {
+            aButtonAction?.Dispose();
+            bButtonAction?.Dispose();
+            rightJoystickAction?.Dispose();
+        }
+
+        private float debugLogTimer = 0f;
+        private const float DEBUG_LOG_INTERVAL = 2f;
 
         private void Update()
         {
-            if (!controllersFound)
+            // Periodic debug log to confirm Update is running and show button states
+            debugLogTimer += Time.deltaTime;
+            if (debugLogTimer >= DEBUG_LOG_INTERVAL)
             {
-                TryGetControllers();
+                debugLogTimer = 0f;
+                bool aPressed = aButtonAction != null && aButtonAction.IsPressed();
+                bool bPressed = bButtonAction != null && bButtonAction.IsPressed();
+                Debug.Log($"[VRInputManager] Polling - A:{aPressed}, B:{bPressed}");
             }
 
-            if (controllersFound)
+            UpdateAButton();
+            UpdateBButton();
+            UpdateJoystick();
+        }
+
+        private void UpdateJoystick()
+        {
+            if (rightJoystickAction != null)
             {
-                UpdateRightTrigger();
-                UpdateLeftJoystick();
+                RightJoystick = rightJoystickAction.ReadValue<Vector2>();
             }
         }
 
-        private void TryGetControllers()
+        private void UpdateAButton()
         {
-            var rightHandDevices = new System.Collections.Generic.List<InputDevice>();
-            InputDevices.GetDevicesAtXRNode(XRNode.RightHand, rightHandDevices);
-            if (rightHandDevices.Count > 0)
+            bool isPressed = aButtonAction.IsPressed();
+            IsRightTriggerHeld = isPressed;
+
+            if (isPressed && !aButtonWasPressed)
             {
-                rightController = rightHandDevices[0];
+                OnRightTriggerPressed?.Invoke();
+                Debug.Log("[VRInputManager] A button pressed - start recording");
+            }
+            else if (!isPressed && aButtonWasPressed)
+            {
+                OnRightTriggerReleased?.Invoke();
+                Debug.Log("[VRInputManager] A button released - stop recording");
             }
 
-            var leftHandDevices = new System.Collections.Generic.List<InputDevice>();
-            InputDevices.GetDevicesAtXRNode(XRNode.LeftHand, leftHandDevices);
-            if (leftHandDevices.Count > 0)
-            {
-                leftController = leftHandDevices[0];
-            }
-
-            controllersFound = rightController.isValid && leftController.isValid;
-            
-            if (controllersFound)
-            {
-                Debug.Log("[VRInputManager] Controllers found and ready");
-            }
+            aButtonWasPressed = isPressed;
         }
 
-        private void UpdateRightTrigger()
+        private void UpdateBButton()
         {
-            float triggerValue = 0f;
-            if (rightController.TryGetFeatureValue(CommonUsages.trigger, out triggerValue))
+            bool isPressed = bButtonAction.IsPressed();
+            IsLeftJoystickPressed = isPressed;
+
+            if (isPressed && !bButtonWasPressed)
             {
-                bool isPressed = triggerValue >= triggerThreshold;
-                IsRightTriggerHeld = isPressed;
-
-                if (isPressed && !rightTriggerWasPressed)
-                {
-                    OnRightTriggerPressed?.Invoke();
-                    Debug.Log("[VRInputManager] Right trigger pressed");
-                }
-                else if (!isPressed && rightTriggerWasPressed)
-                {
-                    OnRightTriggerReleased?.Invoke();
-                    Debug.Log("[VRInputManager] Right trigger released");
-                }
-
-                rightTriggerWasPressed = isPressed;
+                OnLeftJoystickHeldComplete?.Invoke();
+                Debug.Log("[VRInputManager] B button pressed - toggle menu");
             }
+
+            bButtonWasPressed = isPressed;
         }
 
-        private void UpdateLeftJoystick()
+        public bool AreActionsConfigured()
         {
-            bool joystickPressed = false;
-            if (leftController.TryGetFeatureValue(CommonUsages.primary2DAxisClick, out joystickPressed))
-            {
-                IsLeftJoystickPressed = joystickPressed;
-
-                if (joystickPressed)
-                {
-                    if (!leftJoystickWasPressed)
-                    {
-                        leftJoystickHoldTimer = 0f;
-                        Debug.Log("[VRInputManager] Left joystick press started");
-                    }
-
-                    leftJoystickHoldTimer += Time.deltaTime;
-                    float progress = leftJoystickHoldTimer / joystickPressHoldTime;
-                    OnLeftJoystickHoldProgress?.Invoke(progress);
-
-                    if (leftJoystickHoldTimer >= joystickPressHoldTime)
-                    {
-                        OnLeftJoystickHeldComplete?.Invoke();
-                        leftJoystickHoldTimer = 0f;
-                        Debug.Log("[VRInputManager] Left joystick held for required time");
-                    }
-                }
-                else
-                {
-                    if (leftJoystickWasPressed && leftJoystickHoldTimer > 0)
-                    {
-                        Debug.Log($"[VRInputManager] Left joystick released early at {leftJoystickHoldTimer:F1}s");
-                    }
-                    leftJoystickHoldTimer = 0f;
-                }
-
-                leftJoystickWasPressed = joystickPressed;
-            }
-        }
-
-        public void SetJoystickHoldTime(float seconds)
-        {
-            joystickPressHoldTime = seconds;
+            bool configured = aButtonAction != null && bButtonAction != null;
+            Debug.Log($"[VRInputManager] Using Input System - A=Record, B=Menu, Configured: {configured}");
+            return configured;
         }
     }
 }

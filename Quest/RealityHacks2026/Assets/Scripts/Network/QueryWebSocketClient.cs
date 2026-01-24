@@ -50,7 +50,7 @@ namespace RealityHacks.Network
     public class QueryWebSocketClient : MonoBehaviour
     {
         [Header("Server Configuration")]
-        [SerializeField] private string serverHost = "your-server-host.com";
+        [SerializeField] private string serverHost = "memory-backend-328251955578.us-east1.run.app";
         [SerializeField] private string userId = "default-user";
         [SerializeField] private bool useSSL = true;
 
@@ -225,6 +225,12 @@ namespace RealityHacks.Network
         public void SetUserId(string id)
         {
             userId = id;
+        }
+
+        public string GetServerInfo()
+        {
+            string protocol = useSSL ? "wss" : "ws";
+            return $"{protocol}://{serverHost}/ws/query/{userId}";
         }
 
         private void OnDestroy()

@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Text;
 using UnityEngine;
+using UnityEngine.UI;
 using TMPro;
 
 namespace RealityHacks.UI
@@ -10,8 +11,14 @@ namespace RealityHacks.UI
         [Header("UI References")]
         [SerializeField] private TextMeshProUGUI terminalText;
         [SerializeField] private GameObject terminalPanel;
+        [SerializeField] private ScrollRect scrollRect;
         [SerializeField] private int maxLines = 50;
-        [SerializeField] private bool autoScroll = true;
+        
+        [Header("Scroll Settings")]
+        [SerializeField] private float scrollSpeed = 0.5f;
+        [SerializeField] private float joystickDeadzone = 0.2f;
+        
+        private bool autoScroll = true;
 
         [Header("Appearance")]
         [SerializeField] private Color timestampColor = new Color(0.5f, 0.5f, 0.5f);
@@ -26,11 +33,42 @@ namespace RealityHacks.UI
 
         public bool IsVisible => isVisible;
 
+        private RealityHacks.Input.VRInputManager inputManager;
+
         private void Awake()
         {
             if (terminalPanel != null)
             {
                 terminalPanel.SetActive(false);
+            }
+        }
+
+        private void Start()
+        {
+            inputManager = FindObjectOfType<RealityHacks.Input.VRInputManager>();
+        }
+
+        private void Update()
+        {
+            if (!isVisible || inputManager == null) return;
+            
+            float joystickY = inputManager.RightJoystick.y;
+            
+            // If joystick moved, disable auto-scroll and scroll manually
+            if (Mathf.Abs(joystickY) > joystickDeadzone)
+            {
+                autoScroll = false;
+                if (scrollRect != null)
+                {
+                    scrollRect.verticalNormalizedPosition += joystickY * scrollSpeed * Time.deltaTime;
+                    scrollRect.verticalNormalizedPosition = Mathf.Clamp01(scrollRect.verticalNormalizedPosition);
+                }
+            }
+            
+            // Re-enable auto-scroll if scrolled to bottom
+            if (scrollRect != null && scrollRect.verticalNormalizedPosition <= 0.01f)
+            {
+                autoScroll = true;
             }
         }
 
@@ -98,6 +136,13 @@ namespace RealityHacks.UI
             }
 
             terminalText.text = displayBuilder.ToString();
+            
+            // Auto-scroll to bottom if enabled
+            if (autoScroll && scrollRect != null)
+            {
+                Canvas.ForceUpdateCanvases();
+                scrollRect.verticalNormalizedPosition = 0f;
+            }
         }
 
         public void Show()

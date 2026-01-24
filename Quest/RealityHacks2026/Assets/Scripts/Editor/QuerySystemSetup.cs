@@ -45,7 +45,7 @@ namespace RealityHacks.Editor
                 "2. Click 'Create Debug Terminal UI' for the debug console\n" +
                 "3. Click 'Create Mic Status Indicator' for the mic icon\n" +
                 "4. Configure server settings in the QueryWebSocketClient component\n" +
-                "5. Set your Whisper API key in SpeechToTextHandler (optional)",
+                "5. Set your ElevenLabs API key in SpeechToTextHandler (optional)",
                 MessageType.Info);
         }
 
