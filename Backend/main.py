@@ -3,12 +3,17 @@ import json
 import uuid
 import asyncio
 import logging
+import re
+import base64
+import httpx
 from dataclasses import dataclass, field
-from datetime import datetime, date, timezone
+from datetime import datetime, date, timezone, timedelta
 from typing import Any, Dict, List, Optional, Set, Tuple
+from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Body
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 try:
     from google.cloud import firestore  # type: ignore
@@ -32,6 +37,221 @@ logging.basicConfig(
 )
 logger = logging.getLogger("realityhacks-backend")
 
+
+# =============================================================================
+# CONSTANTS & CONFIGURATION
+# =============================================================================
+
+EST = ZoneInfo("America/New_York")
+GEMINI_MODEL = "gemini-2.0-flash-exp"
+MAX_QUERY_IMAGES = 16
+DEFAULT_QUERY_IMAGES = 8
+
+RAW_MEDIA_BUCKET = "reality-hack-2026-raw-media"
+PROCESSED_MEDIA_BUCKET = "reality-hack-2026-processed-media"
+
+# =============================================================================
+# SYSTEM PROMPTS (well-labeled for easy modification)
+# =============================================================================
+
+CAPTURE_ANALYSIS_PROMPT = """You are analyzing a memory capture for a memory assistance application.
+The user relies on this app to remember their daily experiences.
+
+Given:
+- An image (if provided)
+- A transcription of audio (if provided)  
+- The timestamp: {timestamp}
+
+Analyze and return a JSON object with:
+{{
+  "imageSummary": "Brief description of what's shown in the image",
+  "themes": ["theme1", "theme2"],
+  "mood": "the emotional tone (e.g., happy, focused, relaxed, stressed)",
+  "location": "best guess of location type (e.g., home, office, cafe, outdoors)",
+  "detectedFaces": [
+    {{
+      "description": "physical description of person",
+      "possibleName": "name if mentioned in transcription, otherwise null",
+      "confidence": 0.0-1.0
+    }}
+  ],
+  "mentionedNames": ["names mentioned in transcription"],
+  "keyMoment": "one sentence capturing the essence of this memory"
+}}
+
+Transcription: {transcription}
+
+Be concise but informative. Focus on details that would help someone recall this moment later.
+Return ONLY valid JSON, no markdown formatting."""
+
+HOURLY_SUMMARY_PROMPT = """You are creating an hourly summary for a memory assistance application.
+The user relies on these summaries to remember their day.
+NOTE: There may be 60+ memory captures per hour - this is normal. Synthesize them into a comprehensive narrative.
+
+Given these memory captures from the past hour:
+{captures_json}
+
+Create a detailed, comprehensive summary. Return a JSON object:
+{{
+  "summary": "A detailed 5-10 sentence narrative summary of everything that happened this hour. Include specific details, conversations, activities, and transitions between moments. Be thorough.",
+  "themes": ["theme1", "theme2", "theme3", "theme4", "theme5"],
+  "events": [
+    {{"time": "HH:MM", "description": "what happened"}},
+    {{"time": "HH:MM", "description": "what happened"}}
+  ],
+  "peoplePresent": ["names of people seen or mentioned"],
+  "locations": ["places visited this hour"],
+  "highlight": "the single most notable or meaningful moment from this hour",
+  "mood": "overall emotional tone of the hour",
+  "activities": ["list of distinct activities performed"]
+}}
+
+Be warm and personal. Include enough detail that someone could vividly recall this hour later.
+Return ONLY valid JSON, no markdown formatting."""
+
+DAILY_SUMMARY_PROMPT = """You are creating a daily summary for a memory assistance application.
+This summary helps the user remember their entire day.
+NOTE: Each hour may contain 60+ captures, so a full day could have hundreds of moments. Create a rich, detailed narrative.
+
+Given the hourly summaries from today:
+{hourly_json}
+
+Create a comprehensive daily summary. Return a JSON object:
+{{
+  "summary": "A detailed 10-15 sentence narrative of the entire day. Describe the flow of the day from morning to evening, key activities, interactions, and how the day progressed. Be thorough and vivid.",
+  "timeline": [
+    {{"time": "HH:MM", "event": "description of significant event or activity"}},
+    {{"time": "HH:MM", "event": "description of significant event or activity"}}
+  ],
+  "themes": ["theme1", "theme2", "theme3", "theme4", "theme5", "theme6"],
+  "highlights": [
+    {{"time": "HH:MM", "description": "first highlight of the day"}},
+    {{"time": "HH:MM", "description": "second highlight of the day"}},
+    {{"time": "HH:MM", "description": "third highlight of the day"}}
+  ],
+  "mood": "overall emotional arc of the day - describe how mood shifted throughout",
+  "peopleInteractions": [
+    {{"name": "person name", "context": "how/when they interacted"}}
+  ],
+  "locations": ["all locations visited today"],
+  "accomplishments": ["things completed or achieved today"],
+  "morningOverview": "2-3 sentences about the morning",
+  "afternoonOverview": "2-3 sentences about the afternoon", 
+  "eveningOverview": "2-3 sentences about the evening (if applicable)"
+}}
+
+Write in a warm, reflective tone. Help the user appreciate and vividly remember their entire day.
+Return ONLY valid JSON, no markdown formatting."""
+
+CONTACT_UPDATE_PROMPT = """You are managing a contacts database for a memory assistance application.
+
+Current contacts:
+{contacts_json}
+
+New information from a memory capture:
+- Detected faces: {detected_faces}
+- Mentioned names: {mentioned_names}
+- Transcription context: {transcription}
+
+Determine what updates to make. Return a JSON object:
+{{
+  "updates": [
+    {{
+      "action": "update" or "create",
+      "name": "contact name",
+      "changes": {{ "field": "value" }}
+    }}
+  ],
+  "needsMoreInfo": false,
+  "unknownFaceDescription": null
+}}
+
+Return ONLY valid JSON, no markdown formatting."""
+
+QUERY_ROUTER_PROMPT = """You are a memory assistant helping a user recall their experiences.
+
+User Profile:
+{user_profile}
+
+Known Contacts:
+{contacts_summary}
+
+Recent Context:
+- Last hour summary: {last_hour_summary}
+- Last day summary: {last_day_summary}
+
+Query: "{query_text}"
+Date range: {date_range}
+
+Determine what data is needed to answer this query. Return a JSON object:
+{{
+  "queryType": "person" | "event" | "location" | "time" | "general",
+  "needsFaceImages": true/false,
+  "relevantContacts": ["names of contacts that might be relevant"],
+  "dataNeeded": {{
+    "captures": true/false,
+    "hourlySummaries": true/false,
+    "dailySummaries": true/false,
+    "specificDates": ["YYYY-MM-DD"]
+  }},
+  "needsClarification": true/false,
+  "clarificationQuestion": "question if clarification needed, else null"
+}}
+
+Return ONLY valid JSON, no markdown formatting."""
+
+QUERY_ANSWER_PROMPT = """You are a memory assistant helping a user recall their experiences.
+Be warm, helpful, and specific. Reference actual details from the memories.
+
+User Profile:
+{user_profile}
+
+Relevant Memories:
+{memory_context}
+
+Relevant Contacts:
+{contacts_info}
+
+Query: "{query_text}"
+
+Provide a helpful, conversational answer. Return a JSON object:
+{{
+  "answer": "Your conversational response",
+  "confidence": 0.0-1.0,
+  "sourceCaptureIds": ["ids of captures used"],
+  "mentionedContacts": ["names mentioned in answer"],
+  "suggestedFollowUp": "optional follow-up question or null"
+}}
+
+Return ONLY valid JSON, no markdown formatting."""
+
+USER_INIT_PROMPT = """You are setting up a user profile for a memory assistance application.
+
+Given this initial information about the user:
+{user_info}
+
+Extract and organize the information. Return a JSON object:
+{{
+  "name": "user's name",
+  "occupation": "what they do",
+  "familyMembers": ["family member names/relations"],
+  "dailyRoutines": "description of typical day",
+  "medicalNotes": "important health information",
+  "preferences": {{"key": "value"}},
+  "initialContacts": [
+    {{
+      "name": "contact name",
+      "relationship": "relationship to user",
+      "notes": "any relevant notes"
+    }}
+  ]
+}}
+
+Return ONLY valid JSON, no markdown formatting."""
+
+# =============================================================================
+# FASTAPI APP SETUP
+# =============================================================================
 
 app = FastAPI()
 
@@ -69,6 +289,10 @@ def _date_key_from_dt(dt: datetime) -> str:
 class InMemoryDB:
     captures: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     processed_memories: Dict[Tuple[str, str], Dict[str, Any]] = field(default_factory=dict)
+    user_profiles: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    contacts: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    hourly_summaries: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    daily_summaries: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
 
 class FirestoreRepo:
@@ -82,7 +306,6 @@ class FirestoreRepo:
             return
 
         try:
-            # Uses ADC on Cloud Run. Locally, set GOOGLE_APPLICATION_CREDENTIALS.
             self._client = firestore.AsyncClient(project=self.project_id)
             logger.info("Firestore client initialized (project=%s)", self.project_id)
         except Exception:
@@ -93,19 +316,26 @@ class FirestoreRepo:
     def is_firestore(self) -> bool:
         return self._client is not None
 
+    # -------------------------------------------------------------------------
+    # Memory Captures
+    # -------------------------------------------------------------------------
     async def create_capture(self, doc: Dict[str, Any]) -> None:
         if not self._client:
             self._mem.captures[doc["id"]] = doc
             return
-
         await self._client.collection("memory_captures").document(doc["id"]).set(doc)
+
+    async def get_capture(self, capture_id: str) -> Optional[Dict[str, Any]]:
+        if not self._client:
+            return self._mem.captures.get(capture_id)
+        snap = await self._client.collection("memory_captures").document(capture_id).get()
+        return snap.to_dict() if snap.exists else None
 
     async def update_capture(self, capture_id: str, updates: Dict[str, Any]) -> None:
         if not self._client:
             if capture_id in self._mem.captures:
                 self._mem.captures[capture_id].update(updates)
             return
-
         await self._client.collection("memory_captures").document(capture_id).update(updates)
 
     async def list_captures_for_date(self, user_id: str, day: date) -> List[Dict[str, Any]]:
@@ -129,7 +359,6 @@ class FirestoreRepo:
 
         start = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
         end = start.replace(hour=23, minute=59, second=59, microsecond=999999)
-
         q = (
             self._client.collection("memory_captures")
             .where("userId", "==", user_id)
@@ -137,33 +366,144 @@ class FirestoreRepo:
             .where("timestamp", "<=", end)
             .order_by("timestamp")
         )
-
         snaps = [doc async for doc in q.stream()]
         return [s.to_dict() for s in snaps]
 
+    async def list_captures_in_range(self, user_id: str, start_dt: datetime, end_dt: datetime) -> List[Dict[str, Any]]:
+        if not self._client:
+            out: List[Dict[str, Any]] = []
+            for doc in self._mem.captures.values():
+                if doc.get("userId") != user_id:
+                    continue
+                ts = doc.get("timestamp")
+                if isinstance(ts, datetime):
+                    if start_dt <= ts <= end_dt:
+                        out.append(doc)
+            out.sort(key=lambda x: x.get("timestamp") or datetime.min)
+            return out
+
+        q = (
+            self._client.collection("memory_captures")
+            .where("userId", "==", user_id)
+            .where("timestamp", ">=", start_dt)
+            .where("timestamp", "<=", end_dt)
+            .order_by("timestamp")
+        )
+        snaps = [doc async for doc in q.stream()]
+        return [s.to_dict() for s in snaps]
+
+    # -------------------------------------------------------------------------
+    # User Profiles (lifestyle/general info)
+    # -------------------------------------------------------------------------
+    async def get_user_profile(self, user_id: str) -> Optional[Dict[str, Any]]:
+        doc_id = f"profile_{user_id}"
+        if not self._client:
+            return self._mem.user_profiles.get(doc_id)
+        snap = await self._client.collection("user_profiles").document(doc_id).get()
+        return snap.to_dict() if snap.exists else None
+
+    async def upsert_user_profile(self, user_id: str, doc: Dict[str, Any]) -> None:
+        doc_id = f"profile_{user_id}"
+        doc["userId"] = user_id
+        doc["updatedAt"] = datetime.now(timezone.utc)
+        if not self._client:
+            self._mem.user_profiles[doc_id] = doc
+            return
+        await self._client.collection("user_profiles").document(doc_id).set(doc, merge=True)
+
+    # -------------------------------------------------------------------------
+    # Contacts
+    # -------------------------------------------------------------------------
+    async def get_contacts(self, user_id: str) -> Optional[Dict[str, Any]]:
+        doc_id = f"contacts_{user_id}"
+        if not self._client:
+            return self._mem.contacts.get(doc_id)
+        snap = await self._client.collection("contacts").document(doc_id).get()
+        return snap.to_dict() if snap.exists else None
+
+    async def upsert_contacts(self, user_id: str, doc: Dict[str, Any]) -> None:
+        doc_id = f"contacts_{user_id}"
+        doc["userId"] = user_id
+        doc["updatedAt"] = datetime.now(timezone.utc)
+        if not self._client:
+            self._mem.contacts[doc_id] = doc
+            return
+        await self._client.collection("contacts").document(doc_id).set(doc, merge=True)
+
+    # -------------------------------------------------------------------------
+    # Hourly Summaries
+    # -------------------------------------------------------------------------
+    async def get_hourly_summary(self, user_id: str, date_str: str, hour: int) -> Optional[Dict[str, Any]]:
+        doc_id = f"hourly_{user_id}_{date_str}_{hour:02d}"
+        if not self._client:
+            return self._mem.hourly_summaries.get(doc_id)
+        snap = await self._client.collection("hourly_summaries").document(doc_id).get()
+        return snap.to_dict() if snap.exists else None
+
+    async def create_hourly_summary(self, user_id: str, date_str: str, hour: int, doc: Dict[str, Any]) -> None:
+        doc_id = f"hourly_{user_id}_{date_str}_{hour:02d}"
+        doc["userId"] = user_id
+        doc["date"] = date_str
+        doc["hour"] = hour
+        doc["createdAt"] = datetime.now(timezone.utc)
+        if not self._client:
+            self._mem.hourly_summaries[doc_id] = doc
+            return
+        await self._client.collection("hourly_summaries").document(doc_id).set(doc)
+
+    async def list_hourly_summaries_for_date(self, user_id: str, date_str: str) -> List[Dict[str, Any]]:
+        if not self._client:
+            out = []
+            prefix = f"hourly_{user_id}_{date_str}_"
+            for k, v in self._mem.hourly_summaries.items():
+                if k.startswith(prefix):
+                    out.append(v)
+            out.sort(key=lambda x: x.get("hour", 0))
+            return out
+
+        q = (
+            self._client.collection("hourly_summaries")
+            .where("userId", "==", user_id)
+            .where("date", "==", date_str)
+            .order_by("hour")
+        )
+        snaps = [doc async for doc in q.stream()]
+        return [s.to_dict() for s in snaps]
+
+    # -------------------------------------------------------------------------
+    # Daily Summaries
+    # -------------------------------------------------------------------------
+    async def get_daily_summary(self, user_id: str, date_str: str) -> Optional[Dict[str, Any]]:
+        doc_id = f"daily_{user_id}_{date_str}"
+        if not self._client:
+            return self._mem.daily_summaries.get(doc_id)
+        snap = await self._client.collection("daily_summaries").document(doc_id).get()
+        return snap.to_dict() if snap.exists else None
+
+    async def create_daily_summary(self, user_id: str, date_str: str, doc: Dict[str, Any]) -> None:
+        doc_id = f"daily_{user_id}_{date_str}"
+        doc["userId"] = user_id
+        doc["date"] = date_str
+        doc["createdAt"] = datetime.now(timezone.utc)
+        if not self._client:
+            self._mem.daily_summaries[doc_id] = doc
+            return
+        await self._client.collection("daily_summaries").document(doc_id).set(doc)
+
+    # -------------------------------------------------------------------------
+    # Legacy processed_memories (kept for backwards compatibility)
+    # -------------------------------------------------------------------------
     async def get_processed_memory(self, user_id: str, date_key: str) -> Optional[Dict[str, Any]]:
         if not self._client:
             return self._mem.processed_memories.get((user_id, date_key))
-
-        snap = await (
-            self._client.collection("processed_memories")
-            .document(f"{user_id}_{date_key}")
-            .get()
-        )
-        if not snap.exists:
-            return None
-        return snap.to_dict()
+        snap = await self._client.collection("processed_memories").document(f"{user_id}_{date_key}").get()
+        return snap.to_dict() if snap.exists else None
 
     async def upsert_processed_memory(self, user_id: str, date_key: str, doc: Dict[str, Any]) -> None:
         if not self._client:
             self._mem.processed_memories[(user_id, date_key)] = doc
             return
-
-        await (
-            self._client.collection("processed_memories")
-            .document(f"{user_id}_{date_key}")
-            .set(doc)
-        )
+        await self._client.collection("processed_memories").document(f"{user_id}_{date_key}").set(doc)
 
 
 repo = FirestoreRepo()
@@ -302,6 +642,9 @@ async def get_memories_for_date(user_id: str, date: str) -> Dict[str, Any]:
     try:
         doc = await repo.get_processed_memory(user_id, date)
         if doc is None:
+            daily = await repo.get_daily_summary(user_id, date)
+            if daily:
+                return {"status": "success", "data": daily}
             return {"status": "not_found", "message": "No memories for this date"}
         return {"status": "success", "data": doc}
     except Exception as e:
@@ -309,84 +652,430 @@ async def get_memories_for_date(user_id: str, date: str) -> Dict[str, Any]:
         return {"status": "error", "error": str(e)}
 
 
-async def _mock_gemini_analyze_capture(capture: Dict[str, Any]) -> Dict[str, Any]:
-    # Simulate latency
-    await asyncio.sleep(0.3)
+# =============================================================================
+# USER INITIALIZATION ENDPOINT
+# =============================================================================
 
-    t = (capture.get("transcription") or "").strip()
-    location = capture.get("location") or {}
-
-    analysis = {
-        "title": "Mock memory analysis",
-        "highlights": [
-            (t[:120] + ("..." if len(t) > 120 else "")) if t else "No transcription provided",
-        ],
-        "mood": "positive",
-        "locationHint": location.get("name") if isinstance(location, dict) else None,
-    }
-
-    # TODO: Replace this with real Gemini integration (async call + robust retries/timeouts).
-    return analysis
+class UserInitRequest(BaseModel):
+    summary: str
 
 
-def _mock_daily_summary(captures: List[Dict[str, Any]]) -> Tuple[str, List[str]]:
-    themes = ["friends", "work", "travel"]
+@app.post("/init-user/{user_id}")
+async def init_user(user_id: str, request: UserInitRequest) -> Dict[str, Any]:
+    try:
+        existing = await repo.get_user_profile(user_id)
+        if existing:
+            return {
+                "status": "exists",
+                "message": "User profile already exists",
+                "profile": existing
+            }
+        
+        prompt = USER_INIT_PROMPT.format(user_info=request.summary)
+        parsed = await _call_gemini_text(prompt)
+        
+        profile_doc = {
+            "name": parsed.get("name", ""),
+            "occupation": parsed.get("occupation", ""),
+            "familyMembers": parsed.get("familyMembers", []),
+            "dailyRoutines": parsed.get("dailyRoutines", ""),
+            "medicalNotes": parsed.get("medicalNotes", ""),
+            "preferences": parsed.get("preferences", {}),
+            "lastDaySummaryDate": None,
+            "lastDaySummary": None,
+            "lastHourSummaryTime": None,
+            "lastHourSummary": None,
+            "lastCondensationTime": None,
+            "createdAt": datetime.now(timezone.utc),
+        }
+        await repo.upsert_user_profile(user_id, profile_doc)
+        
+        initial_contacts = parsed.get("initialContacts", [])
+        if initial_contacts:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            contacts_list = []
+            for c in initial_contacts:
+                contacts_list.append({
+                    "name": c.get("name", "Unknown"),
+                    "relationship": c.get("relationship", "unknown"),
+                    "notes": c.get("notes", ""),
+                    "bestFacePhotoURL": None,
+                    "firstSeen": now_iso,
+                    "lastSeen": now_iso,
+                    "mentionCount": 0
+                })
+            await repo.upsert_contacts(user_id, {"contacts": contacts_list})
+        else:
+            await repo.upsert_contacts(user_id, {"contacts": []})
+        
+        logger.info("Initialized user profile for user_id=%s", user_id)
+        return {
+            "status": "success",
+            "message": "User profile created",
+            "profile": profile_doc,
+            "contactsCount": len(initial_contacts)
+        }
+    except Exception as e:
+        logger.exception("Failed to initialize user user_id=%s", user_id)
+        return {"status": "error", "error": str(e)}
+
+
+@app.get("/user/{user_id}/profile")
+async def get_user_profile(user_id: str) -> Dict[str, Any]:
+    try:
+        profile = await repo.get_user_profile(user_id)
+        if not profile:
+            return {"status": "not_found", "message": "User profile not found"}
+        return {"status": "success", "data": profile}
+    except Exception as e:
+        logger.exception("Failed to get user profile user_id=%s", user_id)
+        return {"status": "error", "error": str(e)}
+
+
+@app.get("/user/{user_id}/contacts")
+async def get_user_contacts(user_id: str) -> Dict[str, Any]:
+    try:
+        contacts = await repo.get_contacts(user_id)
+        if not contacts:
+            return {"status": "success", "data": {"contacts": []}}
+        return {"status": "success", "data": contacts}
+    except Exception as e:
+        logger.exception("Failed to get contacts user_id=%s", user_id)
+        return {"status": "error", "error": str(e)}
+
+
+# =============================================================================
+# GEMINI HELPER FUNCTIONS
+# =============================================================================
+
+def _get_gemini_model():
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY not set")
+    if genai is None:
+        raise RuntimeError("google-generativeai not installed")
+    genai.configure(api_key=api_key)
+    return genai.GenerativeModel(GEMINI_MODEL)
+
+
+def _parse_json_response(text: str) -> Dict[str, Any]:
+    text = text.strip()
+    if text.startswith("```"):
+        lines = text.split("\n")
+        lines = [l for l in lines if not l.strip().startswith("```")]
+        text = "\n".join(lines)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        match = re.search(r'\{.*\}', text, re.DOTALL)
+        if match:
+            return json.loads(match.group())
+        raise
+
+
+async def _download_image_as_base64(url: str) -> Optional[str]:
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            return base64.b64encode(resp.content).decode("utf-8")
+    except Exception as e:
+        logger.warning("Failed to download image %s: %s", url, e)
+        return None
+
+
+async def _call_gemini_with_image(prompt: str, image_base64: Optional[str] = None) -> Dict[str, Any]:
+    def _call():
+        model = _get_gemini_model()
+        if image_base64:
+            image_part = {"mime_type": "image/jpeg", "data": image_base64}
+            response = model.generate_content([prompt, image_part])
+        else:
+            response = model.generate_content(prompt)
+        return response.text
+    
+    text = await asyncio.to_thread(_call)
+    return _parse_json_response(text)
+
+
+async def _call_gemini_text(prompt: str) -> Dict[str, Any]:
+    def _call():
+        model = _get_gemini_model()
+        response = model.generate_content(prompt)
+        return response.text
+    
+    text = await asyncio.to_thread(_call)
+    return _parse_json_response(text)
+
+
+# =============================================================================
+# CAPTURE ANALYSIS WITH GEMINI VISION
+# =============================================================================
+
+async def _analyze_capture_with_gemini(capture: Dict[str, Any]) -> Dict[str, Any]:
+    ts = capture.get("timestamp")
+    if isinstance(ts, datetime):
+        ts_str = ts.isoformat()
+    else:
+        ts_str = str(ts)
+    
+    transcription = capture.get("transcription") or "No transcription available"
+    photo_url = capture.get("photoURL")
+    
+    prompt = CAPTURE_ANALYSIS_PROMPT.format(
+        timestamp=ts_str,
+        transcription=transcription
+    )
+    
+    image_b64 = None
+    if photo_url:
+        image_b64 = await _download_image_as_base64(photo_url)
+    
+    try:
+        analysis = await _call_gemini_with_image(prompt, image_b64)
+        return analysis
+    except Exception as e:
+        logger.exception("Gemini analysis failed, using fallback")
+        return {
+            "imageSummary": "Analysis unavailable",
+            "themes": [],
+            "mood": "unknown",
+            "location": "unknown",
+            "detectedFaces": [],
+            "mentionedNames": [],
+            "keyMoment": transcription[:100] if transcription else "No details",
+            "error": str(e)
+        }
+
+
+# =============================================================================
+# CONTACTS MANAGEMENT
+# =============================================================================
+
+async def _update_contacts_from_analysis(user_id: str, analysis: Dict[str, Any], capture: Dict[str, Any]) -> None:
+    mentioned_names = analysis.get("mentionedNames") or []
+    detected_faces = analysis.get("detectedFaces") or []
+    
+    if not mentioned_names and not detected_faces:
+        return
+    
+    contacts_doc = await repo.get_contacts(user_id)
+    if not contacts_doc:
+        contacts_doc = {"contacts": []}
+    
+    contacts_list = contacts_doc.get("contacts", [])
+    contacts_by_name = {c.get("name", "").lower(): c for c in contacts_list}
+    now_iso = datetime.now(timezone.utc).isoformat()
+    
+    for name in mentioned_names:
+        name_lower = name.lower()
+        if name_lower in contacts_by_name:
+            contacts_by_name[name_lower]["lastSeen"] = now_iso
+            contacts_by_name[name_lower]["mentionCount"] = contacts_by_name[name_lower].get("mentionCount", 0) + 1
+        else:
+            new_contact = {
+                "name": name,
+                "relationship": "unknown",
+                "notes": f"First mentioned in capture {capture.get('id')}",
+                "bestFacePhotoURL": None,
+                "firstSeen": now_iso,
+                "lastSeen": now_iso,
+                "mentionCount": 1
+            }
+            contacts_list.append(new_contact)
+            contacts_by_name[name_lower] = new_contact
+    
+    for face in detected_faces:
+        face_name = face.get("possibleName")
+        if face_name:
+            name_lower = face_name.lower()
+            if name_lower in contacts_by_name:
+                contact = contacts_by_name[name_lower]
+                if not contact.get("bestFacePhotoURL") and capture.get("photoURL"):
+                    contact["bestFacePhotoURL"] = capture.get("photoURL")
+                contact["lastSeen"] = now_iso
+    
+    contacts_doc["contacts"] = list(contacts_by_name.values())
+    await repo.upsert_contacts(user_id, contacts_doc)
+    logger.info("Updated contacts for user=%s, total=%d", user_id, len(contacts_doc["contacts"]))
+
+
+# =============================================================================
+# HOURLY CONDENSATION
+# =============================================================================
+
+async def _check_and_run_hourly_condensation(user_id: str, capture_ts: datetime) -> None:
+    profile = await repo.get_user_profile(user_id)
+    if not profile:
+        return
+    
+    last_condensation = profile.get("lastCondensationTime")
+    if last_condensation:
+        if isinstance(last_condensation, str):
+            last_condensation = _parse_iso_datetime(last_condensation)
+        time_since = capture_ts - last_condensation
+        if time_since < timedelta(hours=1):
+            return
+    
+    now_est = capture_ts.astimezone(EST)
+    hour_start = now_est.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
+    hour_end = hour_start + timedelta(hours=1) - timedelta(seconds=1)
+    
+    hour_start_utc = hour_start.astimezone(timezone.utc)
+    hour_end_utc = hour_end.astimezone(timezone.utc)
+    
+    captures = await repo.list_captures_in_range(user_id, hour_start_utc, hour_end_utc)
+    
     if not captures:
-        return "No captures for this day.", []
-    return f"You captured {len(captures)} moments today.", themes
+        await repo.upsert_user_profile(user_id, {"lastCondensationTime": capture_ts})
+        return
+    
+    captures_for_prompt = []
+    for c in captures:
+        ts = c.get("timestamp")
+        if isinstance(ts, datetime):
+            ts = ts.isoformat()
+        captures_for_prompt.append({
+            "timestamp": ts,
+            "transcription": c.get("transcription"),
+            "analysis": c.get("geminiAnalysis", {})
+        })
+    
+    try:
+        prompt = HOURLY_SUMMARY_PROMPT.format(captures_json=json.dumps(captures_for_prompt, indent=2))
+        summary_result = await _call_gemini_text(prompt)
+        
+        date_str = hour_start.date().isoformat()
+        hour_num = hour_start.hour
+        
+        await repo.create_hourly_summary(user_id, date_str, hour_num, {
+            "summary": summary_result.get("summary", ""),
+            "themes": summary_result.get("themes", []),
+            "events": summary_result.get("events", []),
+            "peoplePresent": summary_result.get("peoplePresent", []),
+            "locations": summary_result.get("locations", []),
+            "highlight": summary_result.get("highlight", ""),
+            "mood": summary_result.get("mood", ""),
+            "activities": summary_result.get("activities", []),
+            "captureIds": [c.get("id") for c in captures],
+            "captureCount": len(captures)
+        })
+        
+        await repo.upsert_user_profile(user_id, {
+            "lastCondensationTime": capture_ts,
+            "lastHourSummaryTime": capture_ts.isoformat(),
+            "lastHourSummary": summary_result.get("summary", "")
+        })
+        
+        logger.info("Created hourly summary for user=%s date=%s hour=%d", user_id, date_str, hour_num)
+    except Exception:
+        logger.exception("Hourly condensation failed for user=%s", user_id)
+        await repo.upsert_user_profile(user_id, {"lastCondensationTime": capture_ts})
 
+
+# =============================================================================
+# DAILY CONDENSATION (midnight EST check)
+# =============================================================================
+
+async def _check_and_run_daily_condensation(user_id: str, capture_ts: datetime) -> None:
+    now_est = capture_ts.astimezone(EST)
+    yesterday_est = (now_est - timedelta(days=1)).date()
+    yesterday_str = yesterday_est.isoformat()
+    
+    existing = await repo.get_daily_summary(user_id, yesterday_str)
+    if existing:
+        return
+    
+    if now_est.hour < 1:
+        return
+    
+    hourly_summaries = await repo.list_hourly_summaries_for_date(user_id, yesterday_str)
+    
+    if not hourly_summaries:
+        return
+    
+    try:
+        hourly_for_prompt = []
+        for h in hourly_summaries:
+            hourly_for_prompt.append({
+                "hour": h.get("hour"),
+                "summary": h.get("summary"),
+                "themes": h.get("themes"),
+                "events": h.get("events", []),
+                "peoplePresent": h.get("peoplePresent", []),
+                "locations": h.get("locations", []),
+                "activities": h.get("activities", []),
+                "mood": h.get("mood"),
+                "captureCount": h.get("captureCount", 0)
+            })
+        
+        prompt = DAILY_SUMMARY_PROMPT.format(hourly_json=json.dumps(hourly_for_prompt, indent=2))
+        daily_result = await _call_gemini_text(prompt)
+        
+        await repo.create_daily_summary(user_id, yesterday_str, {
+            "summary": daily_result.get("summary", ""),
+            "timeline": daily_result.get("timeline", []),
+            "themes": daily_result.get("themes", []),
+            "highlights": daily_result.get("highlights", []),
+            "mood": daily_result.get("mood", ""),
+            "peopleInteractions": daily_result.get("peopleInteractions", []),
+            "locations": daily_result.get("locations", []),
+            "accomplishments": daily_result.get("accomplishments", []),
+            "morningOverview": daily_result.get("morningOverview", ""),
+            "afternoonOverview": daily_result.get("afternoonOverview", ""),
+            "eveningOverview": daily_result.get("eveningOverview", ""),
+            "hourlyIds": [f"hourly_{user_id}_{yesterday_str}_{h.get('hour', 0):02d}" for h in hourly_summaries],
+            "totalCaptures": sum(h.get("captureCount", 0) for h in hourly_summaries)
+        })
+        
+        await repo.upsert_user_profile(user_id, {
+            "lastDaySummaryDate": yesterday_str,
+            "lastDaySummary": daily_result.get("summary", "")
+        })
+        
+        logger.info("Created daily summary for user=%s date=%s", user_id, yesterday_str)
+    except Exception:
+        logger.exception("Daily condensation failed for user=%s", user_id)
+
+
+# =============================================================================
+# MAIN CAPTURE PROCESSING PIPELINE
+# =============================================================================
 
 async def _process_capture_async(user_id: str, capture_id: str, capture_ts: datetime) -> None:
     try:
-        capture_doc = None
-        # In Firestore mode we re-fetch by date when building daily; for speed, just build analysis from known fields
-        # NOTE: In-memory mode updates happen in-place.
-        if not repo.is_firestore:
-            capture_doc = repo._mem.captures.get(capture_id)  # type: ignore[attr-defined]
-
-        analysis = await _mock_gemini_analyze_capture(capture_doc or {"id": capture_id})
-
-        await repo.update_capture(
-            capture_id,
-            {
-                "processed": True,
-                "geminiAnalysis": analysis,
-            },
-        )
-
+        capture_doc = await repo.get_capture(capture_id)
+        if not capture_doc:
+            logger.error("Capture not found: %s", capture_id)
+            return
+        
+        analysis = await _analyze_capture_with_gemini(capture_doc)
+        
+        await repo.update_capture(capture_id, {
+            "processed": True,
+            "geminiAnalysis": analysis,
+        })
+        
+        await _update_contacts_from_analysis(user_id, analysis, capture_doc)
+        
+        await _check_and_run_hourly_condensation(user_id, capture_ts)
+        await _check_and_run_daily_condensation(user_id, capture_ts)
+        
         day_key = _date_key_from_dt(capture_ts)
-        day = capture_ts.astimezone(timezone.utc).date()
-
-        captures = await repo.list_captures_for_date(user_id, day)
-        summary, themes = _mock_daily_summary(captures)
-
-        processed_doc = {
-            "userId": user_id,
+        await manager.broadcast_unity(user_id, {
+            "type": "memory_processed",
             "date": day_key,
-            "summary": summary,
-            "themes": themes,
-            "captureIds": [c.get("id") for c in captures if c.get("id")],
-        }
-        await repo.upsert_processed_memory(user_id, day_key, processed_doc)
-
-        # Push a lightweight notification to any connected Unity clients (optional convenience)
-        await manager.broadcast_unity(
-            user_id,
-            {
-                "type": "memory_processed",
-                "date": day_key,
-                "captureId": capture_id,
-            },
-        )
-
+            "captureId": capture_id,
+        })
+        
         logger.info("Processed capture=%s user=%s", capture_id, user_id)
     except Exception:
-        logger.exception("Gemini processing failed for capture=%s user=%s", capture_id, user_id)
+        logger.exception("Processing failed for capture=%s user=%s", capture_id, user_id)
         try:
-            await repo.update_capture(
-                capture_id,
-                {"processed": False, "geminiAnalysis": {"error": "processing_failed"}},
-            )
+            await repo.update_capture(capture_id, {
+                "processed": False,
+                "geminiAnalysis": {"error": "processing_failed"}
+            })
         except Exception:
             logger.exception("Failed to mark capture processing failure")
 
@@ -472,6 +1161,150 @@ def _serialize_capture(doc: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+# =============================================================================
+# UNITY QUERY PIPELINE
+# =============================================================================
+
+async def _process_unity_query(user_id: str, query_text: str, date_range: Optional[Dict], include_faces: bool, max_images: int) -> Dict[str, Any]:
+    profile = await repo.get_user_profile(user_id)
+    contacts_doc = await repo.get_contacts(user_id)
+    
+    profile_str = json.dumps(profile, default=str) if profile else "No profile available"
+    contacts_list = contacts_doc.get("contacts", []) if contacts_doc else []
+    contacts_summary = ", ".join([f"{c.get('name')} ({c.get('relationship')})" for c in contacts_list[:20]]) or "No contacts"
+    
+    last_hour = profile.get("lastHourSummary", "No recent hourly summary") if profile else "No data"
+    last_day = profile.get("lastDaySummary", "No recent daily summary") if profile else "No data"
+    
+    date_range_str = "Not specified"
+    if date_range:
+        date_range_str = f"{date_range.get('start', 'any')} to {date_range.get('end', 'any')}"
+    
+    router_prompt = QUERY_ROUTER_PROMPT.format(
+        user_profile=profile_str,
+        contacts_summary=contacts_summary,
+        last_hour_summary=last_hour,
+        last_day_summary=last_day,
+        query_text=query_text,
+        date_range=date_range_str
+    )
+    
+    try:
+        router_result = await _call_gemini_text(router_prompt)
+    except Exception as e:
+        logger.exception("Query router failed")
+        return {"ok": False, "error": "query_routing_failed", "detail": str(e)}
+    
+    if router_result.get("needsClarification"):
+        return {
+            "type": "clarification_needed",
+            "ok": True,
+            "message": router_result.get("clarificationQuestion", "Could you please clarify your question?"),
+            "options": []
+        }
+    
+    memory_context = []
+    
+    data_needed = router_result.get("dataNeeded", {})
+    specific_dates = data_needed.get("specificDates", [])
+    
+    if date_range:
+        try:
+            start_date = datetime.fromisoformat(date_range.get("start", "")).date()
+            end_date = datetime.fromisoformat(date_range.get("end", "")).date()
+            current = start_date
+            while current <= end_date:
+                specific_dates.append(current.isoformat())
+                current += timedelta(days=1)
+        except Exception:
+            pass
+    
+    if not specific_dates:
+        today = datetime.now(EST).date()
+        specific_dates = [today.isoformat(), (today - timedelta(days=1)).isoformat()]
+    
+    specific_dates = list(set(specific_dates))[:7]
+    
+    if data_needed.get("dailySummaries"):
+        for date_str in specific_dates:
+            summary = await repo.get_daily_summary(user_id, date_str)
+            if summary:
+                memory_context.append({"type": "daily_summary", "date": date_str, "data": summary})
+    
+    if data_needed.get("hourlySummaries"):
+        for date_str in specific_dates:
+            hourly = await repo.list_hourly_summaries_for_date(user_id, date_str)
+            for h in hourly:
+                memory_context.append({"type": "hourly_summary", "date": date_str, "hour": h.get("hour"), "data": h})
+    
+    if data_needed.get("captures"):
+        for date_str in specific_dates:
+            try:
+                day = datetime.fromisoformat(date_str).date()
+                captures = await repo.list_captures_for_date(user_id, day)
+                for c in captures[:10]:
+                    memory_context.append({
+                        "type": "capture",
+                        "id": c.get("id"),
+                        "timestamp": str(c.get("timestamp")),
+                        "transcription": c.get("transcription"),
+                        "analysis": c.get("geminiAnalysis", {})
+                    })
+            except Exception:
+                pass
+    
+    relevant_contacts = router_result.get("relevantContacts", [])
+    contacts_info = []
+    attached_images = []
+    
+    if include_faces and router_result.get("needsFaceImages"):
+        for contact_name in relevant_contacts[:max_images]:
+            for c in contacts_list:
+                if c.get("name", "").lower() == contact_name.lower():
+                    contacts_info.append(c)
+                    if c.get("bestFacePhotoURL"):
+                        attached_images.append(c.get("bestFacePhotoURL"))
+                    break
+    
+    attached_images = attached_images[:max_images]
+    
+    answer_prompt = QUERY_ANSWER_PROMPT.format(
+        user_profile=profile_str,
+        memory_context=json.dumps(memory_context, default=str, indent=2),
+        contacts_info=json.dumps(contacts_info, default=str),
+        query_text=query_text
+    )
+    
+    try:
+        answer_result = await _call_gemini_text(answer_prompt)
+    except Exception as e:
+        logger.exception("Query answer generation failed")
+        return {"ok": False, "error": "answer_generation_failed", "detail": str(e)}
+    
+    source_ids = answer_result.get("sourceCaptureIds", [])
+    sources = []
+    for sid in source_ids[:5]:
+        for mc in memory_context:
+            if mc.get("id") == sid:
+                sources.append({
+                    "captureId": sid,
+                    "timestamp": mc.get("timestamp"),
+                    "summary": mc.get("analysis", {}).get("keyMoment", "")
+                })
+                break
+    
+    return {
+        "type": "response",
+        "ok": True,
+        "answer": answer_result.get("answer", "I couldn't find relevant information."),
+        "confidence": answer_result.get("confidence", 0.5),
+        "sources": sources,
+        "relatedContacts": [{"name": c.get("name"), "relationship": c.get("relationship"), "faceImageURL": c.get("bestFacePhotoURL")} for c in contacts_info],
+        "attachedImages": attached_images,
+        "suggestedFollowUp": answer_result.get("suggestedFollowUp")
+    }
+
+
 @app.websocket("/ws/unity/{user_id}")
 async def ws_unity(websocket: WebSocket, user_id: str) -> None:
     await manager.connect("unity", user_id, websocket)
@@ -485,7 +1318,33 @@ async def ws_unity(websocket: WebSocket, user_id: str) -> None:
                 continue
 
             rtype = req.get("type")
-            if rtype == "fetch_daily_memories":
+            
+            # New query-based pipeline
+            if rtype == "query":
+                try:
+                    query_text = req.get("text", "")
+                    if not query_text:
+                        await manager.send_json(websocket, {"ok": False, "error": "missing_query_text"})
+                        continue
+                    
+                    date_range = req.get("dateRange")
+                    include_faces = req.get("includeFaces", True)
+                    max_images = min(req.get("maxImages", DEFAULT_QUERY_IMAGES), MAX_QUERY_IMAGES)
+                    
+                    result = await _process_unity_query(user_id, query_text, date_range, include_faces, max_images)
+                    await manager.send_json(websocket, result)
+                    
+                except Exception as e:
+                    logger.exception("Unity query failed user=%s", user_id)
+                    await manager.send_json(websocket, {
+                        "type": "response",
+                        "ok": False,
+                        "error": "query_failed",
+                        "detail": str(e)
+                    })
+            
+            # Legacy fetch_daily_memories support
+            elif rtype == "fetch_daily_memories":
                 try:
                     date_str = req.get("date")
                     if not isinstance(date_str, str):
@@ -494,13 +1353,19 @@ async def ws_unity(websocket: WebSocket, user_id: str) -> None:
                     date_key = day.isoformat()
 
                     captures = await repo.list_captures_for_date(user_id, day)
-                    processed = await repo.get_processed_memory(user_id, date_key)
-
-                    if processed is None:
-                        summary, themes = _mock_daily_summary(captures)
+                    
+                    daily = await repo.get_daily_summary(user_id, date_key)
+                    if daily:
+                        summary = daily.get("summary", "")
+                        themes = daily.get("themes", [])
                     else:
-                        summary = processed.get("summary")
-                        themes = processed.get("themes")
+                        processed = await repo.get_processed_memory(user_id, date_key)
+                        if processed:
+                            summary = processed.get("summary", "")
+                            themes = processed.get("themes", [])
+                        else:
+                            summary = f"You had {len(captures)} captures on this day."
+                            themes = []
 
                     await manager.send_json(
                         websocket,
@@ -531,7 +1396,7 @@ async def ws_unity(websocket: WebSocket, user_id: str) -> None:
                     {
                         "ok": False,
                         "error": "unknown_request_type",
-                        "detail": f"type={rtype}",
+                        "detail": f"type={rtype}. Supported: 'query', 'fetch_daily_memories'",
                     },
                 )
 
