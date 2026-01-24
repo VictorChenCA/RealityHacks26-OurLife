@@ -15,6 +15,11 @@ try:
 except Exception:  # pragma: no cover
     firestore = None  # type: ignore
 
+try:
+    import google.generativeai as genai  # type: ignore
+except Exception:  # pragma: no cover
+    genai = None  # type: ignore
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -208,6 +213,56 @@ manager = ConnectionManager()
 @app.get("/")
 async def health_check() -> Dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/test-firestore")
+async def test_firestore() -> Dict[str, Any]:
+    try:
+        if firestore is None:
+            raise RuntimeError("google-cloud-firestore is not installed")
+
+        client = firestore.AsyncClient(project="mit-reality26cam-1526")
+        docs = [d async for d in client.collection("memory_captures").limit(1).stream()]
+        sample = [docs[0].to_dict()] if docs else []
+
+        return {
+            "status": "success",
+            "message": "Firestore working!",
+            "sample_data": sample,
+        }
+    except Exception as e:
+        logger.exception("/test-firestore failed")
+        return {"status": "error", "error": str(e)}
+
+
+@app.get("/test-gemini")
+async def test_gemini() -> Dict[str, Any]:
+    try:
+        api_key = os.environ.get("GEMINI_API_KEY")
+        if not api_key:
+            return {"status": "error", "error": "GEMINI_API_KEY is missing"}
+        if genai is None:
+            raise RuntimeError("google-generativeai is not installed")
+
+        def _call() -> str:
+            genai.configure(api_key=api_key)
+            model = genai.GenerativeModel("gemini-2.0-flash-exp")
+            resp = model.generate_content("Say hello in exactly 5 words")
+            text = getattr(resp, "text", None)
+            if not text:
+                text = str(resp)
+            return text.strip()
+
+        text = await asyncio.to_thread(_call)
+
+        return {
+            "status": "success",
+            "message": "Gemini working!",
+            "response": text,
+        }
+    except Exception as e:
+        logger.exception("/test-gemini failed")
+        return {"status": "error", "error": str(e)}
 
 
 async def _mock_gemini_analyze_capture(capture: Dict[str, Any]) -> Dict[str, Any]:
