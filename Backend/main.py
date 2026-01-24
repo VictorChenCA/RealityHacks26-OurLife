@@ -7,13 +7,18 @@ from dataclasses import dataclass, field
 from datetime import datetime, date, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 
 try:
     from google.cloud import firestore  # type: ignore
 except Exception:  # pragma: no cover
     firestore = None  # type: ignore
+
+try:
+    from google.cloud import storage  # type: ignore
+except Exception:  # pragma: no cover
+    storage = None  # type: ignore
 
 try:
     import google.generativeai as genai  # type: ignore
@@ -265,6 +270,45 @@ async def test_gemini() -> Dict[str, Any]:
         return {"status": "error", "error": str(e)}
 
 
+@app.post("/upload/{capture_id}")
+async def upload_capture_media(capture_id: str, file: UploadFile = File(...)) -> Dict[str, Any]:
+    try:
+        if storage is None:
+            raise RuntimeError("google-cloud-storage is not installed")
+
+        bucket_name = "reality-hack-2026-raw-media"
+        object_name = f"memories/{capture_id}/photo.jpg"
+
+        content = await file.read()
+        content_type = file.content_type or "image/jpeg"
+
+        def _upload() -> None:
+            client = storage.Client(project=os.environ.get("GCP_PROJECT_ID"))
+            bucket = client.bucket(bucket_name)
+            blob = bucket.blob(object_name)
+            blob.upload_from_string(content, content_type=content_type)
+
+        await asyncio.to_thread(_upload)
+
+        url = f"https://storage.googleapis.com/{bucket_name}/{object_name}"
+        return {"status": "success", "url": url, "captureId": capture_id}
+    except Exception as e:
+        logger.exception("Upload failed capture_id=%s", capture_id)
+        return {"status": "error", "error": str(e)}
+
+
+@app.get("/memories/{user_id}/{date}")
+async def get_memories_for_date(user_id: str, date: str) -> Dict[str, Any]:
+    try:
+        doc = await repo.get_processed_memory(user_id, date)
+        if doc is None:
+            return {"status": "not_found", "message": "No memories for this date"}
+        return {"status": "success", "data": doc}
+    except Exception as e:
+        logger.exception("Failed to fetch processed memories user=%s date=%s", user_id, date)
+        return {"status": "error", "error": str(e)}
+
+
 async def _mock_gemini_analyze_capture(capture: Dict[str, Any]) -> Dict[str, Any]:
     # Simulate latency
     await asyncio.sleep(0.3)
@@ -360,6 +404,17 @@ async def ws_ios(websocket: WebSocket, user_id: str) -> None:
                 continue
 
             try:
+                if msg.get("type") != "memory_capture":
+                    await manager.send_json(
+                        websocket,
+                        {
+                            "type": "error",
+                            "status": "invalid_type",
+                            "detail": "Expected type=memory_capture",
+                        },
+                    )
+                    continue
+
                 capture_id = str(msg.get("id") or uuid.uuid4())
                 ts = _parse_iso_datetime(msg.get("timestamp"))
 
@@ -370,19 +425,20 @@ async def ws_ios(websocket: WebSocket, user_id: str) -> None:
                     "photoURL": msg.get("photoURL"),
                     "audioURL": msg.get("audioURL"),
                     "transcription": msg.get("transcription"),
-                    "location": msg.get("location"),
                     "processed": False,
                     "geminiAnalysis": None,
                 }
 
                 await repo.create_capture(doc)
 
+                ack_ts = ts.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
                 await manager.send_json(
                     websocket,
                     {
-                        "ok": True,
                         "type": "ack",
-                        "id": capture_id,
+                        "status": "received",
+                        "captureId": capture_id,
+                        "timestamp": ack_ts,
                     },
                 )
 
