@@ -5,6 +5,7 @@ import asyncio
 import logging
 import re
 import base64
+import time
 import httpx
 from dataclasses import dataclass, field
 from datetime import datetime, date, timezone, timedelta
@@ -1093,6 +1094,15 @@ async def ws_ios(websocket: WebSocket, user_id: str) -> None:
                 continue
 
             try:
+                # Log incoming capture content
+                logger.info(
+                    "[SEND_DATA] user=%s type=%s transcription=%s photoURL=%s",
+                    user_id,
+                    msg.get("type"),
+                    (msg.get("transcription") or "")[:200],
+                    msg.get("photoURL", "none")[:100] if msg.get("photoURL") else "none"
+                )
+                
                 if msg.get("type") != "memory_capture":
                     await manager.send_json(
                         websocket,
@@ -1305,6 +1315,90 @@ async def _process_unity_query(user_id: str, query_text: str, date_range: Option
     }
 
 
+# =============================================================================
+# /ws/query/{user_id} - Dedicated Query WebSocket
+# =============================================================================
+# Response Flow:
+#   1. Client sends: {"text": "query", "dateRange": {...}, "includeFaces": true}
+#   2. Server processes with Gemini
+#   3. Server sends back ONE of:
+#      - {"type": "response", "ok": true, "answer": "...", ...}  (final answer)
+#      - {"type": "clarification_needed", "ok": true, "message": "..."}  (needs more info)
+#      - {"type": "error", "ok": false, "error": "...", "detail": "..."}  (error)
+#   4. If clarification was requested, client sends: {"text": "clarification response"}
+#   5. Server sends final response
+# =============================================================================
+
+@app.websocket("/ws/query/{user_id}")
+async def ws_query(websocket: WebSocket, user_id: str) -> None:
+    await manager.connect("unity", user_id, websocket)
+    logger.info("Query WebSocket connected user=%s", user_id)
+    
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            try:
+                req = json.loads(raw)
+            except json.JSONDecodeError:
+                await manager.send_json(websocket, {"type": "error", "ok": False, "error": "invalid_json"})
+                continue
+            
+            query_text = req.get("text", "")
+            if not query_text:
+                await manager.send_json(websocket, {"type": "error", "ok": False, "error": "missing_text"})
+                continue
+            
+            try:
+                date_range = req.get("dateRange")
+                include_faces = req.get("includeFaces", True)
+                max_images = min(req.get("maxImages", DEFAULT_QUERY_IMAGES), MAX_QUERY_IMAGES)
+                
+                # Log incoming query content
+                logger.info(
+                    "[QUERY_DATA] user=%s query=%s dateRange=%s includeFaces=%s",
+                    user_id,
+                    query_text[:300],
+                    json.dumps(date_range) if date_range else "none",
+                    include_faces
+                )
+                
+                start_time = time.time()
+                result = await _process_unity_query(user_id, query_text, date_range, include_faces, max_images)
+                elapsed_ms = (time.time() - start_time) * 1000
+                
+                # Log response summary
+                logger.info(
+                    "[QUERY_DATA] user=%s response_ok=%s confidence=%s elapsed_ms=%.0f answer_preview=%s",
+                    user_id,
+                    result.get("ok"),
+                    result.get("confidence", "n/a"),
+                    elapsed_ms,
+                    (result.get("answer") or "")[:150]
+                )
+                
+                await manager.send_json(websocket, result)
+                
+            except Exception as e:
+                logger.exception("Query failed user=%s", user_id)
+                await manager.send_json(websocket, {
+                    "type": "error",
+                    "ok": False,
+                    "error": "query_failed",
+                    "detail": str(e)
+                })
+    
+    except WebSocketDisconnect:
+        logger.info("Query WebSocket disconnected user=%s", user_id)
+    except Exception:
+        logger.exception("Query websocket error user=%s", user_id)
+    finally:
+        await manager.disconnect("unity", user_id, websocket)
+
+
+# =============================================================================
+# /ws/unity/{user_id} - Legacy Unity WebSocket (fetch daily memories)
+# =============================================================================
+
 @app.websocket("/ws/unity/{user_id}")
 async def ws_unity(websocket: WebSocket, user_id: str) -> None:
     await manager.connect("unity", user_id, websocket)
@@ -1319,32 +1413,7 @@ async def ws_unity(websocket: WebSocket, user_id: str) -> None:
 
             rtype = req.get("type")
             
-            # New query-based pipeline
-            if rtype == "query":
-                try:
-                    query_text = req.get("text", "")
-                    if not query_text:
-                        await manager.send_json(websocket, {"ok": False, "error": "missing_query_text"})
-                        continue
-                    
-                    date_range = req.get("dateRange")
-                    include_faces = req.get("includeFaces", True)
-                    max_images = min(req.get("maxImages", DEFAULT_QUERY_IMAGES), MAX_QUERY_IMAGES)
-                    
-                    result = await _process_unity_query(user_id, query_text, date_range, include_faces, max_images)
-                    await manager.send_json(websocket, result)
-                    
-                except Exception as e:
-                    logger.exception("Unity query failed user=%s", user_id)
-                    await manager.send_json(websocket, {
-                        "type": "response",
-                        "ok": False,
-                        "error": "query_failed",
-                        "detail": str(e)
-                    })
-            
-            # Legacy fetch_daily_memories support
-            elif rtype == "fetch_daily_memories":
+            if rtype == "fetch_daily_memories":
                 try:
                     date_str = req.get("date")
                     if not isinstance(date_str, str):
@@ -1358,47 +1427,42 @@ async def ws_unity(websocket: WebSocket, user_id: str) -> None:
                     if daily:
                         summary = daily.get("summary", "")
                         themes = daily.get("themes", [])
+                        timeline = daily.get("timeline", [])
                     else:
                         processed = await repo.get_processed_memory(user_id, date_key)
                         if processed:
                             summary = processed.get("summary", "")
                             themes = processed.get("themes", [])
+                            timeline = []
                         else:
                             summary = f"You had {len(captures)} captures on this day."
                             themes = []
+                            timeline = []
 
-                    await manager.send_json(
-                        websocket,
-                        {
-                            "ok": True,
-                            "type": "daily_memories",
-                            "date": date_key,
-                            "summary": summary,
-                            "themes": themes,
-                            "captures": [_serialize_capture(c) for c in captures],
-                            "totalCaptures": len(captures),
-                        },
-                    )
+                    await manager.send_json(websocket, {
+                        "ok": True,
+                        "type": "daily_memories",
+                        "date": date_key,
+                        "summary": summary,
+                        "themes": themes,
+                        "timeline": timeline,
+                        "captures": [_serialize_capture(c) for c in captures],
+                        "totalCaptures": len(captures),
+                    })
                 except Exception as e:
                     logger.exception("Unity fetch_daily_memories failed user=%s", user_id)
-                    await manager.send_json(
-                        websocket,
-                        {
-                            "ok": False,
-                            "type": "daily_memories",
-                            "error": "fetch_failed",
-                            "detail": str(e),
-                        },
-                    )
-            else:
-                await manager.send_json(
-                    websocket,
-                    {
+                    await manager.send_json(websocket, {
                         "ok": False,
-                        "error": "unknown_request_type",
-                        "detail": f"type={rtype}. Supported: 'query', 'fetch_daily_memories'",
-                    },
-                )
+                        "type": "daily_memories",
+                        "error": "fetch_failed",
+                        "detail": str(e),
+                    })
+            else:
+                await manager.send_json(websocket, {
+                    "ok": False,
+                    "error": "unknown_request_type",
+                    "detail": f"type={rtype}. Use /ws/query for queries.",
+                })
 
     except WebSocketDisconnect:
         pass
