@@ -44,7 +44,7 @@ EditorBuildSettings:
   - enabled: 0
     path: "Assets/Samples/Meta XR Interaction \u200BSDK/83.0.1/Example Scenes/PoseExamples.unity"
     guid: 4fe358b21fe17764db89a9ab9f202327
-  - enabled: 1
+  - enabled: 0
     path: "Assets/Samples/Meta XR Interaction \u200BSDK/83.0.1/Example Scenes/RayExamples.unity"
     guid: 1b2d3f90c0f50b94cb910c66c773d00d
   - enabled: 0
