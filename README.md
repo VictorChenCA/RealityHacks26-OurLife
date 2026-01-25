@@ -129,7 +129,7 @@ Caregivers aren't just watching passively—they're configuring the system to wo
 *   **Memory Timeline**: Review captured moments and AI interactions
 
 ### 📸 Caregiver App Screens
-<img width="5016" height="4802" alt="Frame 34 (1)" src="https://github.com/user-attachments/assets/04ac8a44-5b20-4d24-ae53-1fdf9f8d3feb" />
+<img width="7728" height="7399" alt="Frame 34 (2)" src="https://github.com/user-attachments/assets/72ce407f-4173-4af2-9e58-c62760ee58db" />
 
 ---
 
