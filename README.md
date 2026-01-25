@@ -1,4 +1,4 @@
-# 🧠 OurLife: A Second Brain for Those Who Need It Most
+<img width="5016" height="4802" alt="Frame 34" src="https://github.com/user-attachments/assets/42259e91-0215-4e9b-b115-e4d13c9d8ebe" /># 🧠 OurLife: A Second Brain for Those Who Need It Most
 
 ### *Helping people with memory loss live independently, with dignity, and stay connected to their loved ones.*
 
@@ -64,7 +64,7 @@ Caregivers aren't just watching passively—they're setting up the system to wor
 *   **Location Boundaries**: Define safe zones and get alerts if they're crossed.
 
 ### 📸 Caregiver App Screens
-![Caregiver App - Home, Reminders, and Memory Management](docs/images/caregiver_app_screens.png)
+<img width="5016" height="4802" alt="Frame 34" src="https://github.com/user-attachments/assets/e6aca7bf-1888-46ad-975e-62276c3e6027" />
 
 ---
 
