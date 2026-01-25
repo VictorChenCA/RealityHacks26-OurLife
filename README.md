@@ -80,28 +80,8 @@ This isn't just entertainment. It's cognitive therapy wrapped in a comfortable, 
 ---
 
 ## 🏗️ How It All Connects
+<img width="4653" height="3548" alt="RealityHacks 2026 Technical Stack Diagram" src="https://github.com/user-attachments/assets/5c5c1f1f-0fa8-4331-a01e-6e423ea54eab" />
 
-```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│  RAY-BAN META   │────▶│   CLOUD BRAIN   │────▶│   META QUEST    │
-│  (Daytime)      │     │   (GCP/Gemini)  │     │  (Nighttime)    │
-│                 │     │                 │     │                 │
-│ • See & Hear    │     │ • Understand    │     │ • Immerse       │
-│ • Whisper Help  │     │ • Remember      │     │ • Reinforce     │
-│ • Capture       │     │ • Protect       │     │ • Connect       │
-└─────────────────┘     └─────────────────┘     └─────────────────┘
-        │                       │                       │
-        └───────────────────────┴───────────────────────┘
-                                │
-                    ┌───────────────────┐
-                    │   CAREGIVER APP   │
-                    │   (Next.js)       │
-                    │                   │
-                    │ • Configure       │
-                    │ • Monitor         │
-                    │ • Respond         │
-                    └───────────────────┘
-```
 
 ### The Tech Behind It
 - **Patient Device**: Ray-Ban Meta glasses + iPhone (Swift, Meta Wearables SDK)
@@ -109,8 +89,6 @@ This isn't just entertainment. It's cognitive therapy wrapped in a comfortable, 
 - **Cloud Brain**: Google Cloud Platform, Gemini 2.0 for understanding, Firestore for memory storage
 - **VR Review**: Meta Quest 3, Unity, ElevenLabs for natural narration
 
-### 🔧 System Architecture
-![Full System Architecture Diagram](docs/images/system_architecture.png)
 
 ---
 
@@ -120,4 +98,4 @@ We want to give people with memory loss more good days—days where they feel ca
 
 ---
 
-*RealityHacks 2026 — Team Enhance Senior Care*
+*RealityHack 2026 — Team OurLife
