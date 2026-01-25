@@ -986,11 +986,32 @@ def _parse_json_response(text: str) -> Dict[str, Any]:
 
 
 async def _download_image_as_base64(url: str) -> Optional[str]:
+    """Download image and return as base64. Uses GCS SDK for private bucket URLs."""
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get(url)
-            resp.raise_for_status()
-            return base64.b64encode(resp.content).decode("utf-8")
+        # Check if this is a GCS URL for our private bucket
+        gcs_prefix = f"https://storage.googleapis.com/{RAW_MEDIA_BUCKET}/"
+        if url.startswith(gcs_prefix):
+            # Use authenticated GCS SDK for private bucket
+            if storage is None:
+                logger.error("google-cloud-storage not installed, cannot download from private bucket")
+                return None
+            
+            object_name = url[len(gcs_prefix):]
+            
+            def _download_blob() -> bytes:
+                client = storage.Client(project=os.environ.get("GCP_PROJECT_ID"))
+                bucket = client.bucket(RAW_MEDIA_BUCKET)
+                blob = bucket.blob(object_name)
+                return blob.download_as_bytes()
+            
+            content = await asyncio.to_thread(_download_blob)
+            return base64.b64encode(content).decode("utf-8")
+        else:
+            # External URL - use httpx (unauthenticated)
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                return base64.b64encode(resp.content).decode("utf-8")
     except Exception as e:
         logger.warning("Failed to download image %s: %s", url, e)
         return None
