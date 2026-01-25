@@ -50,6 +50,23 @@ logger = logging.getLogger("realityhacks-backend")
 
 EST = ZoneInfo("America/New_York")
 GEMINI_MODEL = "gemini-2.0-flash-exp"
+
+def _format_query_timestamp(ts: datetime, now: datetime) -> str:
+    """Format timestamp with relative time for session differentiation."""
+    delta = now - ts
+    if delta.total_seconds() < 60:
+        relative = "just now"
+    elif delta.total_seconds() < 3600:
+        mins = int(delta.total_seconds() / 60)
+        relative = f"{mins}m ago"
+    elif delta.total_seconds() < 86400:
+        hours = int(delta.total_seconds() / 3600)
+        relative = f"{hours}h ago"
+    else:
+        days = int(delta.total_seconds() / 86400)
+        relative = f"{days}d ago"
+    return f"{ts.strftime('%Y-%m-%d %H:%M:%S')} ({relative})"
+
 MAX_QUERY_IMAGES = 16
 DEFAULT_QUERY_IMAGES = 8
 
@@ -189,7 +206,7 @@ Recent Context:
 - Last hour summary: {last_hour_summary}
 - Last day summary: {last_day_summary}
 
-Recent Queries (conversation history):
+Recent Queries (with timestamps - use to identify session boundaries, queries hours/days apart are different sessions):
 {recent_queries}
 
 Current Query: "{query_text}"
@@ -223,7 +240,7 @@ If this follows up on a recent query, maintain context.
 User Profile:
 {user_profile}
 
-Recent Queries (conversation context):
+Recent Queries (timestamps show session context)
 {recent_queries}
 
 Relevant Memories:
@@ -232,6 +249,7 @@ Relevant Memories:
 Relevant Contacts:
 {contacts_info}
 
+Current Time: {current_time}
 Current Query: "{query_text}"
 
 Provide a helpful, conversational answer. 
@@ -1408,14 +1426,20 @@ async def _process_unity_query(user_id: str, query_text: str, date_range: Option
     contacts_list = contacts_doc.get("contacts", []) if contacts_doc else []
     contacts_summary = ", ".join([f"{c.get('name')} ({c.get('relationship')})" for c in contacts_list[:20]]) or "No contacts"
     
-    # Format recent queries for conversation context
+    # Format recent queries for conversation context with formatted timestamps
+    now = datetime.now(timezone.utc)
     recent_queries_list = []
     if recent_queries_doc:
         for q in recent_queries_doc.get("queries", [])[:5]:
+            q_ts = q.get("timestamp")
+            if isinstance(q_ts, datetime):
+                formatted_ts = _format_query_timestamp(q_ts, now)
+            else:
+                formatted_ts = str(q_ts)
             recent_queries_list.append({
                 "query": q.get("query"),
                 "answer": q.get("answer", "")[:200],
-                "timestamp": str(q.get("timestamp"))
+                "timestamp": formatted_ts
             })
     recent_queries_str = json.dumps(recent_queries_list, default=str, indent=2) if recent_queries_list else "No recent queries"
     
@@ -1461,10 +1485,15 @@ async def _process_unity_query(user_id: str, query_text: str, date_range: Option
         extended_count = min(more_context, 20)
         recent_queries_list = []
         for q in recent_queries_doc.get("queries", [])[:extended_count]:
+            q_ts = q.get("timestamp")
+            if isinstance(q_ts, datetime):
+                formatted_ts = _format_query_timestamp(q_ts, now)
+            else:
+                formatted_ts = str(q_ts)
             recent_queries_list.append({
                 "query": q.get("query"),
                 "answer": q.get("answer", "")[:200],
-                "timestamp": str(q.get("timestamp"))
+                "timestamp": formatted_ts
             })
         recent_queries_str = json.dumps(recent_queries_list, default=str, indent=2)
         logger.info("[QUERY_DATA] Extended query context to %d queries", len(recent_queries_list))
@@ -1539,6 +1568,7 @@ async def _process_unity_query(user_id: str, query_text: str, date_range: Option
         recent_queries=recent_queries_str,
         memory_context=json.dumps(memory_context, default=str, indent=2),
         contacts_info=json.dumps(contacts_info, default=str),
+        current_time=now.strftime("%Y-%m-%d %H:%M:%S UTC"),
         query_text=query_text
     )
     
