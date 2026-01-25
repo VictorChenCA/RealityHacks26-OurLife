@@ -2,19 +2,7 @@
 
 ### *Helping people with memory loss live independently, with dignity, and stay connected to their loved ones.*
 
-**RealityHacks 2026 Submission**
-
----
-
-## 🕶️ Why Ray-Ban Meta Glasses?
-Imagine having a helpful companion who sees exactly what you see, hears what you hear, and can gently remind you of things you might have forgotten—all without you having to pull out a phone or ask for help.
-
-That's what Ray-Ban Meta smart glasses do for our users. They blend into everyday life like a regular pair of sunglasses, but they're quietly capturing moments and ready to whisper helpful reminders directly into the wearer's ear. No awkward interactions. No shame. Just seamless support.
-
-## 🥽 Why Meta Quest 3?
-At night, the Quest headset transforms those captured moments into an immersive "Memory Palace." Instead of passively watching a highlight reel, the wearer is *inside* their memories—walking through the park they visited, seeing the face of the grandchild who stopped by.
-
-This deep sense of presence isn't just for entertainment. Research shows that immersive environments help the brain consolidate memories more effectively. We use this to turn a simple review session into gentle cognitive therapy.
+**RealityHack 2026 Submission**
 
 ---
 
@@ -39,56 +27,93 @@ We built a "memory scaffold" — a system that works quietly in the background t
 
 ---
 
-## ✨ Core Features (What It Actually Does)
+## 🏗️ How It All Connects
 
-### 🕒 "What did I just do?" — The 10-Minute Rewind
-When someone feels lost, they can ask: "What was I doing?" The system plays back a short summary of the last few minutes—like a friendly recap from a supportive friend.
-
-### 👥 "Who is this?" — Invisible Social Support
-If the glasses detect the wearer looking at someone for a few seconds without speaking, a quiet voice whispers: "That's your daughter, Anna. She visited last Tuesday." No one else hears it. Dignity preserved.
-
-### 📍 "Where are my keys?" — Finding Lost Items
-Caregivers can "tag" important spots in the home (like where keys go). When something goes missing, the system can show where it was last seen—with a photo and timestamp. No blame, just help.
-
-### 🛡️ Safety Watch — Gentle Escalation
-If the wearer starts heading outside unexpectedly, the glasses ask: "Are you heading out? Do you have your keys and phone?" If they leave a safe zone, the caregiver gets a notification with the location and context—not just an alarm.
+<img width="4653" height="3548" alt="RealityHacks 2026 Technical Stack Diagram" src="https://github.com/user-attachments/assets/5c5c1f1f-0fa8-4331-a01e-6e423ea54eab" />
 
 ---
 
-## 📱 The Caregiver App
+## 🕶️ 1. Ray-Ban Meta Glasses (Patient Device)
 
-Caregivers aren't just watching passively—they're setting up the system to work best for their loved one:
-*   **3D Home Map**: Mark specific spots in the house with custom reminders (e.g., "Kitchen: Remember to turn off the stove").
-*   **People Profiles**: Upload photos and details of family and friends so the glasses know who's who.
-*   **Scheduled Reminders**: Set time-based nudges ("It's 2 PM, time for your medication").
-*   **Location Boundaries**: Define safe zones and get alerts if they're crossed.
+The Ray-Ban Meta smart glasses are the always-present companion that sees and hears what the wearer experiences. They blend into everyday life like regular sunglasses while quietly providing support.
+
+### Technical Implementation
+*   **Meta Wearables SDK (DAT)**: Uses `MWDATCamera` for H.264 video streaming and frame-by-frame capture from the head-mounted camera.
+*   **Multi-Modal Query Pipeline**: When the user asks a question (via long-press), the system captures:
+    - A **Head-POV Image** (what the wearer is looking at)
+    - **Speech-to-Text** via Apple's `SFSpeechRecognizer`
+    - **GPS Coordinates** via CoreLocation
+*   **WebSocket Transport**: Sends JSON payloads to the backend:
+    ```json
+    {
+      "text": "Who is the person in front of me?",
+      "imageURL": "https://storage.googleapis.com/query_123.jpg",
+      "latitude": 42.3601,
+      "longitude": -71.0942
+    }
+    ```
+*   **Voice UI (VUI)**: The response is read aloud via `AVSpeechSynthesizer` directly to the glasses' open-ear speakers. The caregiver companion app shows a live transcription HUD.
+
+### Key Features
+- 🕒 **"What did I just do?"** — 10-minute rewind with AI-summarized recap
+- 👥 **"Who is this?"** — Gaze-triggered face recognition with discreet audio whisper
+- 📍 **"Where are my keys?"** — Last-seen object tracking with photo + timestamp
+- 🛡️ **Safety Watch** — Geofence monitoring with gentle escalation
+
+---
+
+## ☁️ 2. Backend (Google Cloud Platform)
+
+The "Cloud Brain" that understands, remembers, and protects.
+
+### Technical Stack
+*   **Gemini 2.0 Flash**: Multi-modal reasoning over images + text + location context
+*   **Cloud Firestore**: Persistent memory storage (people, places, events)
+*   **Cloud Storage (GCS)**: Image upload pipeline for query snapshots
+*   **Cloud TTS API**: High-quality voice synthesis for audio responses
+*   **Custom RAG Pipeline**: Retrieval-Augmented Generation for personalized memory search
+
+### API Endpoints
+- `POST /upload/{capture_id}` — Upload images from the glasses
+- `WSS /ws/query/{user_id}` — Real-time query/response WebSocket
+- `GET /memories/{user_id}` — Retrieve stored memories for the caregiver dashboard
+
+---
+
+## 🥽 3. Meta Quest 3 (Memory Palace)
+
+At night, the Quest headset transforms captured moments into immersive cognitive therapy.
+
+### Why VR?
+Research shows that immersive environments help the brain consolidate memories more effectively. Instead of passively watching a highlight reel, the wearer is *inside* their memories—the deep sense of presence strengthens recall.
+
+### Technical Implementation
+*   **Unity 2022.3**: Built with Meta XR SDK for Quest 3
+*   **ElevenLabs API**: Natural voice narration for the memory journal
+*   **Daily Highlights Sync**: Curated moments from Ray-Ban capture are packaged into a VR session
+*   **Interactive Q&A**: Gamified prompts ("Who visited today?") with progressive visual hints
+
+### Key Features
+- 🎬 **Immersive Replay**: Relive highlights in panoramic/theater mode
+- 🧠 **Cognitive Reinforcement**: Spaced retrieval questions strengthen long-term memory
+- 👨‍👩‍👧 **Shared Viewing**: Remote family can join the virtual space for social connection
+- ✅ **Positive Reinforcement**: "You remembered!" feedback loop
+
+---
+
+## 📱 4. Caregiver App (Next.js Dashboard)
+
+Caregivers aren't just watching passively—they're configuring the system to work best for their loved one.
+
+### Features
+*   **3D Home Map**: Mark specific spots with custom reminders (e.g., "Kitchen: Turn off the stove")
+*   **People Profiles**: Upload photos and details for the "Who's Who" face database
+*   **Scheduled Reminders**: Time-based nudges synced to the glasses
+*   **Location Boundaries**: Define safe zones with exit alerts
+*   **Memory Timeline**: Review captured moments and AI interactions
 
 ### 📸 Caregiver App Screens
 <img width="5016" height="4802" alt="Frame 34 (1)" src="https://github.com/user-attachments/assets/04ac8a44-5b20-4d24-ae53-1fdf9f8d3feb" />
-
----
-
-## 🥽 The Nightly "Memory Palace" (Meta Quest)
-
-Before bed, the wearer puts on the Quest headset for a 10-15 minute "Memory Palace" session:
-*   **Immersive Replay**: Relive the day's highlights in VR—not as a video, but as a place they can look around in.
-*   **Gentle Q&A**: The system asks simple questions ("Who visited today?") with visual hints to strengthen recall.
-*   **Family Connection**: Remote family members can join the same virtual space to watch the highlights together—even from across the country.
-
-This isn't just entertainment. It's cognitive therapy wrapped in a comfortable, social experience.
-
----
-
-## 🏗️ How It All Connects
-<img width="4653" height="3548" alt="RealityHacks 2026 Technical Stack Diagram" src="https://github.com/user-attachments/assets/5c5c1f1f-0fa8-4331-a01e-6e423ea54eab" />
-
-
-### The Tech Behind It
-- **Patient Device**: Ray-Ban Meta glasses + iPhone (Swift, Meta Wearables SDK)
-- **Caregiver Dashboard**: Next.js web app with 3D room visualization
-- **Cloud Brain**: Google Cloud Platform, Gemini 2.0 for understanding, Firestore for memory storage
-- **VR Review**: Meta Quest 3, Unity, ElevenLabs for natural narration
-
 
 ---
 
@@ -98,4 +123,4 @@ We want to give people with memory loss more good days—days where they feel ca
 
 ---
 
-*RealityHack 2026 — Team OurLife
+*RealityHack 2026 — Team OurLife*
