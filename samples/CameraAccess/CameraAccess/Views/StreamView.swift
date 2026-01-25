@@ -156,7 +156,20 @@ struct StreamView: View {
                .background(Color.black.opacity(0.7))
                .cornerRadius(12)
                .padding(.bottom, 100)
+        } else if !viewModel.lastAIResponse.isEmpty {
+          // AI Response - Cyan color
+          Text("🤖 \(viewModel.lastAIResponse)")
+            .font(.system(size: 14))
+            .foregroundColor(.black)
+            .padding(12)
+            .background(Color.cyan.opacity(0.9))
+            .cornerRadius(8)
+            .padding(.horizontal, 20)
+            .padding(.bottom, 100)
+            .multilineTextAlignment(.center)
+            .lineLimit(5)
         } else if !viewModel.speechRecognizer.transcribedText.isEmpty {
+          // User transcription - White on black
           Text(viewModel.speechRecognizer.transcribedText)
             .font(.system(size: 14))
             .foregroundColor(.white)

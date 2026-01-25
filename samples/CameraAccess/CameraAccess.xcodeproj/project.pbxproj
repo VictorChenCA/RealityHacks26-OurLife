@@ -7,11 +7,12 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		4A91491140654927BE37738D /* TTSManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B84CF1B3B9E3491492E8771C /* TTSManager.swift */; };
-
-
 		1470B09C16C34B9E87C339AF /* MemoryCaptureManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = D18A9B6D1BF44B6ABC855487 /* MemoryCaptureManager.swift */; };
+		1EF108F62F266A2300F87E1A /* LocationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1EF108F52F266A2300F87E1A /* LocationManager.swift */; };
+		1EF108F82F266A3A00F87E1A /* GeofenceManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1EF108F72F266A3A00F87E1A /* GeofenceManager.swift */; };
+		1EF108FD2F266AEE00F87E1A /* Geofence.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1EF108FB2F266AEE00F87E1A /* Geofence.swift */; };
 		40BB05201668423BBD83A0D1 /* SpeechRecognizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7283BC9C86DA4C44B3A6B8B1 /* SpeechRecognizer.swift */; };
+		4A91491140654927BE37738D /* TTSManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B84CF1B3B9E3491492E8771C /* TTSManager.swift */; };
 		4B0FFB7082304CF098312238 /* QueryWebSocketClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE0B5804524247ACA0EA499A /* QueryWebSocketClient.swift */; };
 		8BC0301F560049A79F52A499 /* MemoryCaptureWebSocketClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FE736FDD7E841BAA8FB9526 /* MemoryCaptureWebSocketClient.swift */; };
 		8F2D23802E856711002D0588 /* DebugMenuViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F2D237F2E856711002D0588 /* DebugMenuViewModel.swift */; };
@@ -68,10 +69,10 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		B84CF1B3B9E3491492E8771C /* TTSManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TTSManager.swift; sourceTree = "<group>"; };
-
-
 		1D9E4F94A687479DA093AA16 /* GCPUploader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GCPUploader.swift; sourceTree = "<group>"; };
+		1EF108F52F266A2300F87E1A /* LocationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationManager.swift; sourceTree = "<group>"; };
+		1EF108F72F266A3A00F87E1A /* GeofenceManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeofenceManager.swift; sourceTree = "<group>"; };
+		1EF108FB2F266AEE00F87E1A /* Geofence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Geofence.swift; sourceTree = "<group>"; };
 		3A3A3A3A3A3A3A3A3A3A3A3A /* CameraAccess.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CameraAccess.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		7283BC9C86DA4C44B3A6B8B1 /* SpeechRecognizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechRecognizer.swift; sourceTree = "<group>"; };
 		8F2D237F2E856711002D0588 /* DebugMenuViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugMenuViewModel.swift; sourceTree = "<group>"; };
@@ -95,6 +96,7 @@
 		8FFD60532E849D0D0035E446 /* RegistrationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RegistrationView.swift; sourceTree = "<group>"; };
 		8FFD605E2E84A2F70035E446 /* DebugMenuView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugMenuView.swift; sourceTree = "<group>"; };
 		8FFD605F2E84A2F70035E446 /* MainAppView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainAppView.swift; sourceTree = "<group>"; };
+		B84CF1B3B9E3491492E8771C /* TTSManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TTSManager.swift; sourceTree = "<group>"; };
 		CE0B5804524247ACA0EA499A /* QueryWebSocketClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueryWebSocketClient.swift; sourceTree = "<group>"; };
 		D18A9B6D1BF44B6ABC855487 /* MemoryCaptureManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryCaptureManager.swift; sourceTree = "<group>"; };
 		E66D30232E7DA71900470B48 /* MockDeviceKitButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockDeviceKitButton.swift; sourceTree = "<group>"; };
@@ -124,6 +126,14 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		1EF108FC2F266AEE00F87E1A /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				1EF108FB2F266AEE00F87E1A /* Geofence.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
 		5A5A5A5A5A5A5A5A5A5A5A5A = {
 			isa = PBXGroup;
 			children = (
@@ -156,7 +166,8 @@
 				8FFD602B2E8433E20035E446 /* MockDeviceKit */,
 				8F2D237F2E856711002D0588 /* DebugMenuViewModel.swift */,
 				8FD96B6F2E6F0A9800F56AB1 /* StreamSessionViewModel.swift */,
-				8F8F00772E8ACB4500A4BDAF /* WearablesViewModel.swift */,);
+				8F8F00772E8ACB4500A4BDAF /* WearablesViewModel.swift */,
+			);
 			path = ViewModels;
 			sourceTree = "<group>";
 		};
@@ -172,13 +183,15 @@
 				8FFD60532E849D0D0035E446 /* RegistrationView.swift */,
 				8FD96B752E6F0A9800F56AB1 /* StreamSessionView.swift */,
 				E6A188472EB918740097D0E1 /* StreamView.swift */,
-				E6FD3BCD2EB4D53A00E7FE5D /* NonStreamView.swift */,);
+				E6FD3BCD2EB4D53A00E7FE5D /* NonStreamView.swift */,
+			);
 			path = Views;
 			sourceTree = "<group>";
 		};
 		8FD96B7D2E6F0A9800F56AB1 /* CameraAccess */ = {
 			isa = PBXGroup;
 			children = (
+				1EF108FC2F266AEE00F87E1A /* Models */,
 				8FD96B702E6F0A9800F56AB1 /* ViewModels */,
 				8FD96B762E6F0A9800F56AB1 /* Views */,
 				8FFD5FF82E8422B60035E446 /* Utils */,
@@ -205,14 +218,16 @@
 		8FFD5FF82E8422B60035E446 /* Utils */ = {
 			isa = PBXGroup;
 			children = (
+				1EF108F72F266A3A00F87E1A /* GeofenceManager.swift */,
+				1EF108F52F266A2300F87E1A /* LocationManager.swift */,
 				8FFD60392E84342C0035E446 /* TimeUtils.swift */,
 				D18A9B6D1BF44B6ABC855487 /* MemoryCaptureManager.swift */,
 				1D9E4F94A687479DA093AA16 /* GCPUploader.swift */,
 				8FE736FDD7E841BAA8FB9526 /* MemoryCaptureWebSocketClient.swift */,
 				7283BC9C86DA4C44B3A6B8B1 /* SpeechRecognizer.swift */,
 				CE0B5804524247ACA0EA499A /* QueryWebSocketClient.swift */,
-			
-				B84CF1B3B9E3491492E8771C /* TTSManager.swift */,);
+				B84CF1B3B9E3491492E8771C /* TTSManager.swift */,
+			);
 			path = Utils;
 			sourceTree = "<group>";
 		};
@@ -343,8 +358,11 @@
 			files = (
 				8FD96B7F2E6F0A9800F56AB1 /* CameraAccessApp.swift in Sources */,
 				8FD96B812E6F0A9800F56AB1 /* HomeScreenView.swift in Sources */,
+				1EF108F62F266A2300F87E1A /* LocationManager.swift in Sources */,
 				8F2D23802E856711002D0588 /* DebugMenuViewModel.swift in Sources */,
 				8FFD60542E849D0D0035E446 /* RegistrationView.swift in Sources */,
+				1EF108FD2F266AEE00F87E1A /* Geofence.swift in Sources */,
+				1EF108F82F266A3A00F87E1A /* GeofenceManager.swift in Sources */,
 				8FFD60342E8434070035E446 /* MediaPickerView.swift in Sources */,
 				8FFD60352E8434070035E446 /* StatusText.swift in Sources */,
 				8FFD602C2E8433E20035E446 /* MockDeviceKitViewModel.swift in Sources */,
@@ -369,7 +387,8 @@
 				8BC0301F560049A79F52A499 /* MemoryCaptureWebSocketClient.swift in Sources */,
 				40BB05201668423BBD83A0D1 /* SpeechRecognizer.swift in Sources */,
 				4B0FFB7082304CF098312238 /* QueryWebSocketClient.swift in Sources */,
-				4A91491140654927BE37738D /* TTSManager.swift in Sources */,);
+				4A91491140654927BE37738D /* TTSManager.swift in Sources */,
+			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		E699CC912E8150670052C240 /* Sources */ = {

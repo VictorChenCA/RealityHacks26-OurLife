@@ -56,6 +56,10 @@
 	<string>This app uses speech recognition to transcribe your memories.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>This app needs microphone access for speech recognition.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>This app uses your location to provide context-aware memory reminders.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>This app needs background location access to remind you about important things when you arrive at or leave specific places.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

@@ -77,6 +77,7 @@ class StreamSessionViewModel: ObservableObject {
   public var isQuerying: Bool { isRecordingQuery || isProcessingQuery }
   
   @Published public var queryStatus: String = ""
+  @Published public var lastAIResponse: String = ""  // Caption of what AI said
   
   private var capturedTranscription: String?
   private var periodicCaptureTask: Task<Void, Never>?
@@ -377,6 +378,8 @@ class StreamSessionViewModel: ObservableObject {
   }
 
   // MARK: - Query Handling
+  // Timeout task for query responses
+  private var queryTimeoutTask: Task<Void, Never>?
   
   private func setupQueryClient() {
     queryClient.onLog = { message in
@@ -394,7 +397,9 @@ class StreamSessionViewModel: ObservableObject {
     
     queryClient.onAnswerReceived = { [weak self] answer in
       Task { @MainActor [weak self] in
+        self?.cancelQueryTimeout()
         self?.queryStatus = "Response received"
+        self?.lastAIResponse = answer  // Save for caption display
         // Update UI state to remove spinner
         self?.isProcessingQuery = false
         
@@ -405,7 +410,9 @@ class StreamSessionViewModel: ObservableObject {
     
     queryClient.onAudioReceived = { [weak self] base64Audio in
       Task { @MainActor [weak self] in
-        // Play audio (interrupts TTS)
+        self?.cancelQueryTimeout()
+        // Note: Audio response doesn't have text, so we mark it as audio
+        self?.lastAIResponse = "[Audio response playing...]"
         // Update UI state to remove spinner
         self?.isProcessingQuery = false
         
@@ -413,8 +420,27 @@ class StreamSessionViewModel: ObservableObject {
       }
     }
     
+    // Handle clarification requests from backend
+    queryClient.onClarificationNeeded = { [weak self] message, options in
+      Task { @MainActor [weak self] in
+        self?.cancelQueryTimeout()
+        NSLog("[StreamSessionViewModel] 🤔 Clarification needed: \(message)")
+        self?.queryStatus = "Clarification needed"
+        self?.isProcessingQuery = false
+        
+        // Speak the clarification message
+        var speechText = message
+        if !options.isEmpty {
+          speechText += " Options are: " + options.joined(separator: ", ")
+        }
+        self?.lastAIResponse = speechText  // Save for caption
+        self?.ttsManager.speak(speechText)
+      }
+    }
+    
     queryClient.onError = { [weak self] error in
       Task { @MainActor [weak self] in
+        self?.cancelQueryTimeout()
         self?.queryStatus = "Error: \(error.localizedDescription)"
         self?.ttsManager.speak("Sorry, something went wrong.")
         self?.isProcessingQuery = false
@@ -424,6 +450,29 @@ class StreamSessionViewModel: ObservableObject {
         try? self?.speechRecognizer.startRecognition()
       }
     }
+  }
+  
+  private func startQueryTimeout() {
+    cancelQueryTimeout()
+    queryTimeoutTask = Task { @MainActor [weak self] in
+      // Wait 10 seconds for a response
+      try? await Task.sleep(nanoseconds: 10 * NSEC_PER_SEC)
+      guard !Task.isCancelled, let self, self.isProcessingQuery else { return }
+      
+      NSLog("[StreamSessionViewModel] ⏰ Query timeout - no response received")
+      self.queryStatus = "No response"
+      self.isProcessingQuery = false
+      self.ttsManager.speak("Sorry, I didn't get a response. Please try again.")
+      
+      // Resume background tasks
+      self.startPeriodicCaptureTask()
+      try? self.speechRecognizer.startRecognition()
+    }
+  }
+  
+  private func cancelQueryTimeout() {
+    queryTimeoutTask?.cancel()
+    queryTimeoutTask = nil
   }
 
   // Store query image captured at button press
@@ -449,6 +498,7 @@ class StreamSessionViewModel: ObservableObject {
     isProcessingQuery = false 
     queryStatus = "Listening..."
     queryImage = nil  // Clear any previous query image
+    lastAIResponse = ""  // Clear previous AI response caption
     
     // Reset text for the new query
     speechRecognizer.resetText()
@@ -516,6 +566,9 @@ class StreamSessionViewModel: ObservableObject {
         try await self.queryClient.sendQuery(image: imageToSend, text: transcription)
         self.uploadStatus = "Query sent!"
         NSLog("[StreamSessionViewModel] ✅ Query sent successfully")
+        
+        // Start timeout - if no response in 10 seconds, show fallback
+        self.startQueryTimeout()
       } catch {
         self.uploadStatus = "Query failed: \(error.localizedDescription)"
         self.queryStatus = "Query failed"
