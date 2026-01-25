@@ -36,6 +36,8 @@ namespace RealityHacks.Network
         public string error;
         public string detail;
         public string suggestedFollowUp;
+        public string audioURL;
+        public string queryId;
     }
 
     [Serializable]

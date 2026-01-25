@@ -502,6 +502,7 @@ GameObject:
   - component: {fileID: 1312803308}
   - component: {fileID: 1312803307}
   - component: {fileID: 1312803306}
+  - component: {fileID: 1312803313}
   m_Layer: 0
   m_Name: QuerySystem
   m_TagString: Untagged
@@ -595,6 +596,8 @@ MonoBehaviour:
   debugTerminal: {fileID: 1823083626}
   micStatusIndicator: {fileID: 394739772}
   speechToText: {fileID: 1312803307}
+  audioManager: {fileID: 0}
+  audioIndicator: {fileID: 0}
   autoConnectOnStart: 1
   reconnectDelay: 5
 --- !u!4 &1312803312
@@ -612,6 +615,20 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &1312803313
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1312803305}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: e17887d01bc924ff5896f25d69aaf2f2, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  audioSource: {fileID: 0}
+  downloadTimeoutSeconds: 10
 --- !u!1 &1601953890
 GameObject:
   m_ObjectHideFlags: 0
