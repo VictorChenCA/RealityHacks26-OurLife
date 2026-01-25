@@ -217,8 +217,8 @@ Note: Set "needsMoreQueryContext" to fetch additional conversation history (0 = 
 Return ONLY valid JSON, no markdown formatting."""
 
 QUERY_ANSWER_PROMPT = """You are a memory assistant helping a user recall their experiences.
-Be warm, helpful, and specific. Reference actual details from the memories.
-Consider recent conversation context to provide coherent follow-up answers.
+Be warm, helpful, and specific, although brief and natural. Reference actual details from the memories.
+If this follows up on a recent query, maintain context. 
 
 User Profile:
 {user_profile}
@@ -234,7 +234,8 @@ Relevant Contacts:
 
 Current Query: "{query_text}"
 
-Provide a helpful, conversational answer. If this follows up on a recent query, maintain context.
+Provide a helpful, conversational answer. 
+
 Return a JSON object:
 {{
   "answer": "Your conversational response",
