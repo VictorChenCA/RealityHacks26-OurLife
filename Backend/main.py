@@ -179,18 +179,7 @@ New information from a memory capture:
 - Mentioned names: {mentioned_names}
 - Transcription context: {transcription}
 
-Determine what updates to make. Return a JSON object:
-{{
-  "updates": [
-    {{
-      "action": "update" or "create",
-      "name": "contact name",
-      "changes": {{ "field": "value" }}
-    }}
-  ],
-  "needsMoreInfo": false,
-  "unknownFaceDescription": null
-}}
+Determine what the complete JSON file should be.
 
 Return ONLY valid JSON, no markdown formatting."""
 
@@ -1559,13 +1548,24 @@ async def _process_unity_query(user_id: str, query_text: str, date_range: Option
                 day = datetime.fromisoformat(date_str).date()
                 captures = await repo.list_captures_for_date(user_id, day)
                 for c in captures[:10]:
-                    memory_context.append({
-                        "type": "capture",
-                        "id": c.get("id"),
-                        "timestamp": str(c.get("timestamp")),
-                        "transcription": c.get("transcription"),
-                        "analysis": c.get("geminiAnalysis", {})
-                    })
+                    analysis = c.get("geminiAnalysis")
+                    if analysis:
+                        memory_context.append({
+                            "type": "capture",
+                            "id": c.get("id"),
+                            "timestamp": str(c.get("timestamp")),
+                            "transcription": c.get("transcription"),
+                            "analysis": analysis
+                        })
+                    else:
+                        # Unprocessed capture - use raw transcription
+                        memory_context.append({
+                            "type": "recent_capture",
+                            "id": c.get("id"),
+                            "timestamp": str(c.get("timestamp")),
+                            "transcription": c.get("transcription") or "(no audio)",
+                            "status": "processing"
+                        })
             except Exception:
                 pass
     
