@@ -164,7 +164,8 @@ class GCPUploader {
         var audioURL: String? = nil
         
         if let json = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: Any] {
-          photoURL = json["photoURL"] as? String
+          // Backend returns "url" field, but we also check "photoURL" for compatibility
+          photoURL = json["url"] as? String ?? json["photoURL"] as? String
           audioURL = json["audioURL"] as? String
           
           if let photoURL = photoURL {
@@ -173,10 +174,10 @@ class GCPUploader {
           if let audioURL = audioURL {
             NSLog("[GCPUploader] Parsed audioURL: \(audioURL)")
           }
-        } else {
-          // If response is not JSON, try to construct photoURL from captureId
-          // Backend might return photoURL in a different format, or we construct it
-          // For now, we'll construct it based on the expected GCS path pattern
+        }
+        
+        // If no URL in response, construct from captureId
+        if photoURL == nil {
           photoURL = "https://storage.googleapis.com/reality-hack-2026-raw-media/memories/\(finalCaptureId)/photo.jpg"
           NSLog("[GCPUploader] Constructed photoURL from captureId: \(photoURL ?? "nil")")
         }

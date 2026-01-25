@@ -18,6 +18,7 @@ import SwiftUI
 
 struct HomeScreenView: View {
   @ObservedObject var viewModel: WearablesViewModel
+  @StateObject private var ttsManager = TTSManager()
 
   var body: some View {
     ZStack {

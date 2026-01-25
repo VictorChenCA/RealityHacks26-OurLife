@@ -52,6 +52,10 @@
 	<string>Needed to connect to Meta AI Glasses</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>This app needs access to save photos captured from your glasses.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>This app uses speech recognition to transcribe your memories.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>This app needs microphone access for speech recognition.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

@@ -127,7 +127,7 @@ class MemoryCaptureWebSocketClient: NSObject, URLSessionWebSocketDelegate {
       // Disconnect and reconnect
       disconnect()
       try connect()
-      guard let newTask = webSocketTask, newTask.state == .running else {
+      guard let newTask = self.webSocketTask, newTask.state == .running else {
         NSLog("[MemoryCaptureWebSocketClient] ❌ Failed to establish connection after reconnect attempt")
         throw MemoryCaptureWebSocketError.notConnected
       }

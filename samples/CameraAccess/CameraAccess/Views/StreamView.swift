@@ -43,13 +43,122 @@ struct StreamView: View {
           .foregroundColor(.white)
       }
 
-      // Bottom controls layer
+      // TTS Test Controls Overlay
+      VStack {
+        HStack(spacing: 12) {
+          Spacer()
+          Button(action: {
+            viewModel.ttsManager.speak("Testing audio output one.")
+          }) {
+            Image(systemName: "speaker.wave.2.fill")
+              .foregroundColor(.white)
+              .padding(8)
+              .background(Color.black.opacity(0.6))
+              .clipShape(Circle())
+          }
+          
+          Button(action: {
+            viewModel.ttsManager.speak("Hey cass, don't forget to take your keys.")
+          }) {
+            Image(systemName: "exclamationmark.bubble.fill")
+              .foregroundColor(.white)
+              .padding(8)
+              .background(Color.black.opacity(0.6))
+              .clipShape(Circle())
+          }
+          
+          Button(action: {
+            viewModel.ttsManager.speak("This is a longer test sentence to check the rate.")
+          }) {
+            Image(systemName: "text.bubble.fill")
+              .foregroundColor(.white)
+              .padding(8)
+              .background(Color.black.opacity(0.6))
+              .clipShape(Circle())
+          }
+        }
+        .padding(.top, 50)
+        .padding(.trailing, 20)
+        
+        Spacer()
+      }
 
+      
+      // Bottom controls layer
       VStack {
         Spacer()
         ControlsView(viewModel: viewModel)
       }
       .padding(.all, 24)
+      
+      // Query Status Overlay
+      VStack {
+        if !viewModel.queryStatus.isEmpty {
+           Text(viewModel.queryStatus)
+             .font(.headline)
+             .padding()
+             .background(Color.black.opacity(0.7))
+             .foregroundColor(.white)
+             .cornerRadius(12)
+             .padding(.top, 100)
+             .transition(.opacity)
+        }
+        Spacer()
+      }
+
+      // Center Query Button
+      VStack {
+        Spacer()
+        HStack {
+            Spacer()
+            // Using DragGesture for reliable TouchDown/TouchUp behavior
+            ZStack {
+                Circle()
+                   .fill(viewModel.isQuerying ? Color.red : Color.blue)
+                   .frame(width: 80, height: 80)
+                   .shadow(color: .black.opacity(0.3), radius: 8, x: 0, y: 4)
+                   .scaleEffect(viewModel.isQuerying ? 1.2 : 1.0)
+                   .animation(.spring(response: 0.3, dampingFraction: 0.6), value: viewModel.isQuerying)
+                   
+                Image(systemName: "questionmark")
+                   .font(.system(size: 40, weight: .bold))
+                   .foregroundColor(.white)
+            }
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        if !viewModel.isQuerying {
+                            let generator = UIImpactFeedbackGenerator(style: .medium)
+                            generator.impactOccurred()
+                            viewModel.startQueryInput()
+                        }
+                    }
+                    .onEnded { _ in
+                        let generator = UIImpactFeedbackGenerator(style: .medium)
+                        generator.impactOccurred()
+                        viewModel.finishQueryInput()
+                    }
+            )
+            .padding(.bottom, 100) // Position above bottom controls
+            Spacer()
+        }
+      }
+      
+      // Transcription overlay
+      VStack {
+        Spacer()
+        if !viewModel.speechRecognizer.transcribedText.isEmpty {
+          Text(viewModel.speechRecognizer.transcribedText)
+            .font(.system(size: 14))
+            .foregroundColor(.white)
+            .padding(12)
+            .background(Color.black.opacity(0.7))
+            .cornerRadius(8)
+            .padding(.horizontal, 20)
+            .padding(.bottom, 100)
+        }
+      }
+      
       // Timer display area with fixed height
       VStack {
         Spacer()

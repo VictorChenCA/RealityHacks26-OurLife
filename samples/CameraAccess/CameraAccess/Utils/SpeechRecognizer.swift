@@ -99,6 +99,8 @@ class SpeechRecognizer: ObservableObject {
           }
           self.isRecognizing = true
           
+          NSLog("[SpeechRecognizer] Transcribed: \(self.transcribedText)")
+          
           // Stop if final result
           if result.isFinal {
             self.isRecognizing = false
@@ -120,8 +122,8 @@ class SpeechRecognizer: ObservableObject {
     audioEngine.stop()
     audioEngine.inputNode.removeTap(onBus: 0)
     
-    // Deactivate audio session
-    try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    // Don't deactivate audio session - DAT SDK manages it
+    // try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     
     isRecognizing = false
   }
@@ -141,4 +143,3 @@ enum SpeechRecognizerError: Error {
   case engineError
   case audioSessionError
 }
-

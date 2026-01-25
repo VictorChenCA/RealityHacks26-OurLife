@@ -82,67 +82,92 @@ class QueryWebSocketClient: NSObject {
     log("[QueryWebSocketClient] ✅ Connection initiated to: \(endpoint)")
   }
   
-  /// Send query with image and text
+  /// Upload image to backend to get a URL
   /// - Parameters:
-  ///   - image: The image to send (will be base64 encoded)
-  ///   - text: The query text
-  ///   - includeFaces: Whether to include face images (default: false)
-  ///   - maxImages: Maximum images to attach (default: 1)
-  func sendQuery(image: UIImage, text: String, includeFaces: Bool = false, maxImages: Int = 1) throws {
-    log("[QueryWebSocketClient] 📤 sendQuery() called - text: '\(text)', includeFaces: \(includeFaces), maxImages: \(maxImages)")
+  ///   - image: Image to upload
+  ///   - queryId: Unique ID for the query
+  /// - Returns: The URL of the uploaded image
+  func uploadImage(image: UIImage, queryId: String) async throws -> String {
+    log("[QueryWebSocketClient] 📤 Uploading image for query: \(queryId)")
+    
+    let urlString = "\(baseURL)/query-upload/\(queryId)"
+    guard let url = URL(string: urlString) else {
+      throw QueryWebSocketError.invalidURL
+    }
+    
+    var request = URLRequest(url: url)
+    request.httpMethod = "POST"
+    
+    let boundary = UUID().uuidString
+    request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+    
+    guard let imageData = image.jpegData(compressionQuality: 0.8) else {
+      throw QueryWebSocketError.imageConversionFailed
+    }
+    
+    var body = Data()
+    body.append("--\(boundary)\r\n".data(using: .utf8)!)
+    body.append("Content-Disposition: form-data; name=\"file\"; filename=\"query_image.jpg\"\r\n".data(using: .utf8)!)
+    body.append("Content-Type: image/jpeg\r\n\r\n".data(using: .utf8)!)
+    body.append(imageData)
+    body.append("\r\n".data(using: .utf8)!)
+    body.append("--\(boundary)--\r\n".data(using: .utf8)!)
+    
+    request.httpBody = body
+    
+    let sessionToUse = urlSession ?? URLSession.shared
+    let (data, response) = try await sessionToUse.data(for: request)
+    
+    guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
+        log("[QueryWebSocketClient] ❌ Upload failed with status: \((response as? HTTPURLResponse)?.statusCode ?? 0)")
+        throw QueryWebSocketError.uploadFailed
+    }
+    
+    guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let imageUrl = json["url"] as? String else {
+        log("[QueryWebSocketClient] ❌ Failed to parse response or missing 'url'")
+        throw QueryWebSocketError.invalidResponse
+    }
+    
+    log("[QueryWebSocketClient] ✅ Image uploaded successfully: \(imageUrl)")
+    return imageUrl
+  }
+  
+  /// Send query with image (via upload) and text
+  func sendQuery(image: UIImage?, text: String, includeFaces: Bool = true, maxImages: Int = 8) async throws {
+    log("[QueryWebSocketClient] 📤 sendQuery() called - text: '\(text)'")
     
     guard let webSocketTask = webSocketTask else {
-      log("[QueryWebSocketClient] ❌ sendQuery() failed: webSocketTask is nil")
       throw QueryWebSocketError.notConnected
     }
     
-    log("[QueryWebSocketClient] ✅ WebSocket task exists, state: \(webSocketTask.state.rawValue)")
+    var imageURL: String? = nil
     
-    // Convert image to Base64
-    log("[QueryWebSocketClient] 🖼️ Converting image to JPEG (quality: 0.8)...")
-    guard let imageData = image.jpegData(compressionQuality: 0.8) else {
-      log("[QueryWebSocketClient] ❌ Failed to convert image to JPEG")
-      throw QueryWebSocketError.imageConversionFailed
+    // 1. Upload image if present
+    if let image = image {
+        let queryId = UUID().uuidString
+        imageURL = try await uploadImage(image: image, queryId: queryId)
     }
-    let imageSizeKB = Double(imageData.count) / 1024.0
-    log("[QueryWebSocketClient] ✅ Image converted: \(String(format: "%.1f", imageSizeKB)) KB")
     
-    let base64Image = imageData.base64EncodedString()
-    log("[QueryWebSocketClient] ✅ Image Base64 encoded: \(base64Image.count) chars")
-    
-    // Create JSON request following documented format
-    log("[QueryWebSocketClient] 📦 Creating JSON request...")
+    // 2. Prepare JSON payload
     var request: [String: Any] = [
       "text": text,
-      "image": base64Image,
       "includeFaces": includeFaces,
       "maxImages": maxImages
     ]
     
+    if let url = imageURL {
+        request["imageURL"] = url
+    }
+    
     guard let jsonData = try? JSONSerialization.data(withJSONObject: request, options: []),
           let jsonString = String(data: jsonData, encoding: .utf8) else {
-      log("[QueryWebSocketClient] ❌ Failed to encode JSON")
       throw QueryWebSocketError.jsonEncodingFailed
     }
     
-    let jsonSizeKB = Double(jsonData.count) / 1024.0
-    log("[QueryWebSocketClient] ✅ JSON created: \(String(format: "%.1f", jsonSizeKB)) KB, \(jsonString.count) chars")
-    
     let message = URLSessionWebSocketTask.Message.string(jsonString)
-    log("[QueryWebSocketClient] 📤 Sending WebSocket message...")
-    webSocketTask.send(message) { [weak self] error in
-      guard let self = self else { return }
-      if let error = error {
-        self.log("[QueryWebSocketClient] ❌ Failed to send message: \(error.localizedDescription)")
-        self.log("[QueryWebSocketClient] ❌ Error domain: \((error as NSError).domain), code: \((error as NSError).code)")
-        Task { @MainActor [weak self] in
-          self?.onError?(error)
-        }
-      } else {
-        self.log("[QueryWebSocketClient] ✅ Message sent successfully! Query: '\(text.prefix(50))...'")
-        self.log("[QueryWebSocketClient] ⏳ Waiting for response...")
-      }
-    }
+    try await webSocketTask.send(message)
+    log("[QueryWebSocketClient] ✅ Query sent (WS)")
   }
   
   /// Receive messages from WebSocket
@@ -319,5 +344,7 @@ enum QueryWebSocketError: Error {
   case notConnected
   case imageConversionFailed
   case jsonEncodingFailed
+  case uploadFailed
+  case invalidResponse
 }
 
