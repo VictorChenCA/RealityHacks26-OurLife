@@ -59,7 +59,7 @@ WebSocket: wss://{host}/ws/query/{user_id}
 #### Query Flow
 
 ```
-Client                          Backend                      Cloud Storage
+Client                          Backend                      Cloud Services
    |                               |                              |
    |-- POST /query-upload/{id} --->|                              |
    |   (optional image)            |-- Upload to GCS ------------>|
@@ -71,7 +71,9 @@ Client                          Backend                      Cloud Storage
    |                               |-- Gemini Processing          |
    |                               |   (uses recent queries       |
    |                               |    for context)              |
-   |<-- {"type":"response",...} ---|                              |
+   |                               |-- TTS Audio Generation ----->|
+   |                               |   (Google Cloud TTS)         |
+   |<-- {"type":"response", "audioURL":...} --|                   |
 ```
 
 ---
@@ -143,7 +145,9 @@ Simply send a new query - recent queries are stored and provided as context:
 {
   "type": "response",
   "ok": true,
+  "queryId": "a1b2c3d4",
   "answer": "Yesterday at the coffee shop, you met with John Smith around 2pm. You discussed the hackathon project and he mentioned his new job at Google.",
+  "audioURL": "https://storage.googleapis.com/reality-hack-2026-processed-media/query-responses/{user_id}/{query_id}/response.mp3",
   "confidence": 0.85,
   "sources": [
     {
@@ -166,6 +170,19 @@ Simply send a new query - recent queries are stored and provided as context:
 }
 ```
 
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | string | Always `"response"` for successful queries |
+| `ok` | boolean | `true` if query succeeded |
+| `queryId` | string | Unique 8-character identifier for this query |
+| `answer` | string | Natural language response from Gemini |
+| `audioURL` | string \| null | URL to MP3 audio of the answer (TTS). `null` if TTS unavailable or failed |
+| `confidence` | number | 0.0-1.0 confidence score |
+| `sources` | array | Memory captures used to answer |
+| `relatedContacts` | array | Contacts mentioned in the answer |
+| `attachedImages` | array | Relevant image URLs |
+| `suggestedFollowUp` | string \| null | Optional follow-up question |
+
 ### Error Response
 ```json
 {
@@ -175,6 +192,47 @@ Simply send a new query - recent queries are stored and provided as context:
   "detail": "Error message"
 }
 ```
+
+| Error Code | Description |
+|------------|-------------|
+| `invalid_json` | Request was not valid JSON |
+| `missing_text` | Required `text` field not provided |
+| `query_routing_failed` | Failed to analyze query intent |
+| `answer_generation_failed` | Gemini failed to generate response |
+| `query_failed` | General query processing error |
+
+---
+
+## Text-to-Speech (TTS) Audio
+
+Every successful query response includes an `audioURL` field containing a URL to an MP3 audio file of the answer.
+
+### How It Works
+1. After Gemini generates the answer, the backend sends it to **Google Cloud Text-to-Speech**
+2. Uses voice `en-US-Neural2-F` (female, natural-sounding)
+3. Audio is uploaded to `reality-hack-2026-processed-media` bucket
+4. URL is included in the response
+
+### Audio URL Format
+```
+https://storage.googleapis.com/reality-hack-2026-processed-media/query-responses/{user_id}/{query_id}/response.mp3
+```
+
+### Handling Audio
+```javascript
+// Example: Play audio response
+const response = await receiveQueryResponse();
+if (response.audioURL) {
+  const audio = new Audio(response.audioURL);
+  audio.play();
+}
+```
+
+### Notes
+- `audioURL` is `null` if TTS is unavailable or generation failed
+- Audio is generated for all successful responses with non-empty answers
+- Max text length for TTS: 5000 characters (truncated if longer)
+- Audio format: MP3
 
 ---
 

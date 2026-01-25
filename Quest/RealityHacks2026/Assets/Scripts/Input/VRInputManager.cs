@@ -83,21 +83,8 @@ namespace RealityHacks.Input
             rightJoystickAction?.Dispose();
         }
 
-        private float debugLogTimer = 0f;
-        private const float DEBUG_LOG_INTERVAL = 2f;
-
         private void Update()
         {
-            // Periodic debug log to confirm Update is running and show button states
-            debugLogTimer += Time.deltaTime;
-            if (debugLogTimer >= DEBUG_LOG_INTERVAL)
-            {
-                debugLogTimer = 0f;
-                bool aPressed = aButtonAction != null && aButtonAction.IsPressed();
-                bool bPressed = bButtonAction != null && bButtonAction.IsPressed();
-                Debug.Log($"[VRInputManager] Polling - A:{aPressed}, B:{bPressed}");
-            }
-
             UpdateAButton();
             UpdateBButton();
             UpdateJoystick();

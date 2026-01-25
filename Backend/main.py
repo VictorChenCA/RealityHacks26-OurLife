@@ -27,6 +27,11 @@ except Exception:  # pragma: no cover
     storage = None  # type: ignore
 
 try:
+    from google.cloud import texttospeech  # type: ignore
+except Exception:  # pragma: no cover
+    texttospeech = None  # type: ignore
+
+try:
     import google.generativeai as genai  # type: ignore
 except Exception:  # pragma: no cover
     genai = None  # type: ignore
@@ -45,6 +50,23 @@ logger = logging.getLogger("realityhacks-backend")
 
 EST = ZoneInfo("America/New_York")
 GEMINI_MODEL = "gemini-2.0-flash-exp"
+
+def _format_query_timestamp(ts: datetime, now: datetime) -> str:
+    """Format timestamp with relative time for session differentiation."""
+    delta = now - ts
+    if delta.total_seconds() < 60:
+        relative = "just now"
+    elif delta.total_seconds() < 3600:
+        mins = int(delta.total_seconds() / 60)
+        relative = f"{mins}m ago"
+    elif delta.total_seconds() < 86400:
+        hours = int(delta.total_seconds() / 3600)
+        relative = f"{hours}h ago"
+    else:
+        days = int(delta.total_seconds() / 86400)
+        relative = f"{days}d ago"
+    return f"{ts.strftime('%Y-%m-%d %H:%M:%S')} ({relative})"
+
 MAX_QUERY_IMAGES = 16
 DEFAULT_QUERY_IMAGES = 8
 
@@ -184,7 +206,7 @@ Recent Context:
 - Last hour summary: {last_hour_summary}
 - Last day summary: {last_day_summary}
 
-Recent Queries (conversation history):
+Recent Queries (with timestamps - use to identify session boundaries, queries hours/days apart are different sessions):
 {recent_queries}
 
 Current Query: "{query_text}"
@@ -212,13 +234,13 @@ Note: Set "needsMoreQueryContext" to fetch additional conversation history (0 = 
 Return ONLY valid JSON, no markdown formatting."""
 
 QUERY_ANSWER_PROMPT = """You are a memory assistant helping a user recall their experiences.
-Be warm, helpful, and specific. Reference actual details from the memories.
-Consider recent conversation context to provide coherent follow-up answers.
+Be warm, helpful, and specific, although brief and natural. Reference actual details from the memories.
+If this follows up on a recent query, maintain context. 
 
 User Profile:
 {user_profile}
 
-Recent Queries (conversation context):
+Recent Queries (timestamps show session context)
 {recent_queries}
 
 Relevant Memories:
@@ -227,9 +249,11 @@ Relevant Memories:
 Relevant Contacts:
 {contacts_info}
 
+Current Time: {current_time}
 Current Query: "{query_text}"
 
-Provide a helpful, conversational answer. If this follows up on a recent query, maintain context.
+Provide a helpful, conversational answer. 
+
 Return a JSON object:
 {{
   "answer": "Your conversational response",
@@ -611,6 +635,109 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
+# =============================================================================
+# TEXT-TO-SPEECH SERVICE
+# =============================================================================
+
+class TTSService:
+    """Google Cloud Text-to-Speech service for generating audio from query responses."""
+    
+    MAX_TEXT_LENGTH = 5000
+    
+    def __init__(self):
+        self._client = None
+        self._voice = None
+        self._audio_config = None
+        
+        if texttospeech is None:
+            logger.warning("google-cloud-texttospeech not available; TTS disabled")
+            return
+        
+        try:
+            self._client = texttospeech.TextToSpeechClient()
+            self._voice = texttospeech.VoiceSelectionParams(
+                language_code="en-US",
+                name="en-US-Neural2-F",
+                ssml_gender=texttospeech.SsmlVoiceGender.FEMALE
+            )
+            self._audio_config = texttospeech.AudioConfig(
+                audio_encoding=texttospeech.AudioEncoding.MP3
+            )
+            logger.info("TTS service initialized with voice en-US-Neural2-F")
+        except Exception:
+            logger.exception("Failed to initialize TTS client")
+            self._client = None
+    
+    @property
+    def is_available(self) -> bool:
+        return self._client is not None
+    
+    async def generate_speech(self, text: str, query_id: str, user_id: str) -> Optional[str]:
+        """
+        Generate speech from text and upload to Cloud Storage.
+        
+        Returns the public URL of the audio file, or None on failure.
+        """
+        if not self.is_available:
+            logger.debug("TTS not available, skipping audio generation")
+            return None
+        
+        if not text or not text.strip():
+            return None
+        
+        try:
+            # Truncate text if too long
+            if len(text) > self.MAX_TEXT_LENGTH:
+                text = text[:self.MAX_TEXT_LENGTH]
+                logger.info("TTS text truncated to %d chars for query_id=%s", self.MAX_TEXT_LENGTH, query_id)
+            
+            # Synthesize speech (sync call wrapped in to_thread)
+            def _synthesize():
+                synthesis_input = texttospeech.SynthesisInput(text=text)
+                response = self._client.synthesize_speech(
+                    input=synthesis_input,
+                    voice=self._voice,
+                    audio_config=self._audio_config
+                )
+                return response.audio_content
+            
+            audio_content = await asyncio.to_thread(_synthesize)
+            
+            if not audio_content:
+                logger.warning("TTS returned empty audio for query_id=%s", query_id)
+                return None
+            
+            # Upload to Cloud Storage
+            if storage is None:
+                logger.warning("Storage not available, cannot upload TTS audio")
+                return None
+            
+            bucket_name = PROCESSED_MEDIA_BUCKET
+            object_name = f"query-responses/{user_id}/{query_id}/response.mp3"
+            
+            def _upload():
+                import io
+                client = storage.Client(project=os.environ.get("GCP_PROJECT_ID"))
+                bucket = client.bucket(bucket_name)
+                blob = bucket.blob(object_name)
+                # Use BytesIO to avoid any ACL operations with uniform bucket access
+                audio_file = io.BytesIO(audio_content)
+                blob.upload_from_file(audio_file, content_type="audio/mpeg", rewind=True)
+                return f"https://storage.googleapis.com/{bucket_name}/{object_name}"
+            
+            public_url = await asyncio.to_thread(_upload)
+            
+            logger.info("TTS audio uploaded: query_id=%s url=%s", query_id, public_url)
+            return public_url
+            
+        except Exception as e:
+            logger.exception("TTS generation failed for query_id=%s: %s", query_id, e)
+            return None
+
+
+tts_service = TTSService()
+
+
 @app.get("/")
 async def health_check() -> Dict[str, str]:
     return {"status": "ok"}
@@ -859,11 +986,32 @@ def _parse_json_response(text: str) -> Dict[str, Any]:
 
 
 async def _download_image_as_base64(url: str) -> Optional[str]:
+    """Download image and return as base64. Uses GCS SDK for private bucket URLs."""
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get(url)
-            resp.raise_for_status()
-            return base64.b64encode(resp.content).decode("utf-8")
+        # Check if this is a GCS URL for our private bucket
+        gcs_prefix = f"https://storage.googleapis.com/{RAW_MEDIA_BUCKET}/"
+        if url.startswith(gcs_prefix):
+            # Use authenticated GCS SDK for private bucket
+            if storage is None:
+                logger.error("google-cloud-storage not installed, cannot download from private bucket")
+                return None
+            
+            object_name = url[len(gcs_prefix):]
+            
+            def _download_blob() -> bytes:
+                client = storage.Client(project=os.environ.get("GCP_PROJECT_ID"))
+                bucket = client.bucket(RAW_MEDIA_BUCKET)
+                blob = bucket.blob(object_name)
+                return blob.download_as_bytes()
+            
+            content = await asyncio.to_thread(_download_blob)
+            return base64.b64encode(content).decode("utf-8")
+        else:
+            # External URL - use httpx (unauthenticated)
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                return base64.b64encode(resp.content).decode("utf-8")
     except Exception as e:
         logger.warning("Failed to download image %s: %s", url, e)
         return None
@@ -1299,14 +1447,20 @@ async def _process_unity_query(user_id: str, query_text: str, date_range: Option
     contacts_list = contacts_doc.get("contacts", []) if contacts_doc else []
     contacts_summary = ", ".join([f"{c.get('name')} ({c.get('relationship')})" for c in contacts_list[:20]]) or "No contacts"
     
-    # Format recent queries for conversation context
+    # Format recent queries for conversation context with formatted timestamps
+    now = datetime.now(timezone.utc)
     recent_queries_list = []
     if recent_queries_doc:
         for q in recent_queries_doc.get("queries", [])[:5]:
+            q_ts = q.get("timestamp")
+            if isinstance(q_ts, datetime):
+                formatted_ts = _format_query_timestamp(q_ts, now)
+            else:
+                formatted_ts = str(q_ts)
             recent_queries_list.append({
                 "query": q.get("query"),
                 "answer": q.get("answer", "")[:200],
-                "timestamp": str(q.get("timestamp"))
+                "timestamp": formatted_ts
             })
     recent_queries_str = json.dumps(recent_queries_list, default=str, indent=2) if recent_queries_list else "No recent queries"
     
@@ -1352,10 +1506,15 @@ async def _process_unity_query(user_id: str, query_text: str, date_range: Option
         extended_count = min(more_context, 20)
         recent_queries_list = []
         for q in recent_queries_doc.get("queries", [])[:extended_count]:
+            q_ts = q.get("timestamp")
+            if isinstance(q_ts, datetime):
+                formatted_ts = _format_query_timestamp(q_ts, now)
+            else:
+                formatted_ts = str(q_ts)
             recent_queries_list.append({
                 "query": q.get("query"),
                 "answer": q.get("answer", "")[:200],
-                "timestamp": str(q.get("timestamp"))
+                "timestamp": formatted_ts
             })
         recent_queries_str = json.dumps(recent_queries_list, default=str, indent=2)
         logger.info("[QUERY_DATA] Extended query context to %d queries", len(recent_queries_list))
@@ -1430,6 +1589,7 @@ async def _process_unity_query(user_id: str, query_text: str, date_range: Option
         recent_queries=recent_queries_str,
         memory_context=json.dumps(memory_context, default=str, indent=2),
         contacts_info=json.dumps(contacts_info, default=str),
+        current_time=now.strftime("%Y-%m-%d %H:%M:%S UTC"),
         query_text=query_text
     )
     
@@ -1511,6 +1671,9 @@ async def ws_query(websocket: WebSocket, user_id: str) -> None:
                 max_images = min(req.get("maxImages", DEFAULT_QUERY_IMAGES), MAX_QUERY_IMAGES)
                 image_url = req.get("imageURL")  # Optional: URL from POST /query-upload
                 
+                # Generate unique query ID
+                query_id = str(uuid.uuid4())[:8]
+                
                 # Download image if URL provided
                 user_image = None
                 if image_url:
@@ -1518,8 +1681,9 @@ async def ws_query(websocket: WebSocket, user_id: str) -> None:
                 
                 # Log incoming query content
                 logger.info(
-                    "[QUERY_DATA] user=%s query=%s dateRange=%s includeFaces=%s imageURL=%s",
+                    "[QUERY_DATA] user=%s query_id=%s query=%s dateRange=%s includeFaces=%s imageURL=%s",
                     user_id,
+                    query_id,
                     query_text[:300],
                     json.dumps(date_range) if date_range else "none",
                     include_faces,
@@ -1530,23 +1694,45 @@ async def ws_query(websocket: WebSocket, user_id: str) -> None:
                 result = await _process_unity_query(user_id, query_text, date_range, include_faces, max_images, user_image)
                 elapsed_ms = (time.time() - start_time) * 1000
                 
+                # Add queryId to result
+                result["queryId"] = query_id
+                
+                # Generate TTS audio for successful responses (non-blocking on failure)
+                audio_url = None
+                if result.get("ok") and result.get("answer"):
+                    try:
+                        audio_url = await tts_service.generate_speech(
+                            result["answer"],
+                            query_id,
+                            user_id
+                        )
+                    except Exception as tts_err:
+                        logger.warning("TTS failed for query_id=%s: %s", query_id, tts_err)
+                
+                # Add audioURL to result (null if TTS failed or unavailable)
+                result["audioURL"] = audio_url
+                
                 # Log response summary
                 logger.info(
-                    "[QUERY_DATA] user=%s response_ok=%s confidence=%s elapsed_ms=%.0f answer_preview=%s",
+                    "[QUERY_DATA] user=%s query_id=%s response_ok=%s confidence=%s elapsed_ms=%.0f audioURL=%s answer_preview=%s",
                     user_id,
+                    query_id,
                     result.get("ok"),
                     result.get("confidence", "n/a"),
                     elapsed_ms,
+                    "yes" if audio_url else "no",
                     (result.get("answer") or "")[:150]
                 )
                 
                 # Save query to recent queries
                 await repo.add_recent_query(user_id, {
                     "query": query_text,
+                    "queryId": query_id,
                     "imageURL": image_url,
                     "dateRange": date_range,
                     "responseType": result.get("type"),
                     "answer": result.get("answer", "")[:500],  # Truncate for storage
+                    "audioURL": audio_url,
                     "confidence": result.get("confidence"),
                     "elapsed_ms": round(elapsed_ms),
                     "ok": result.get("ok", False)

@@ -17,6 +17,8 @@ namespace RealityHacks.Core
         [SerializeField] private DebugTerminal debugTerminal;
         [SerializeField] private MicrophoneStatusIndicator micStatusIndicator;
         [SerializeField] private SpeechToTextHandler speechToText;
+        [SerializeField] private QueryAudioManager audioManager;
+        [SerializeField] private AudioPlaybackIndicator audioIndicator;
 
         [Header("Configuration")]
         [SerializeField] private bool autoConnectOnStart = true;
@@ -62,6 +64,10 @@ namespace RealityHacks.Core
                 micStatusIndicator = GetComponentInChildren<MicrophoneStatusIndicator>();
             if (speechToText == null)
                 speechToText = GetComponentInChildren<SpeechToTextHandler>();
+            if (audioManager == null)
+                audioManager = GetComponentInChildren<QueryAudioManager>();
+            if (audioIndicator == null)
+                audioIndicator = GetComponentInChildren<AudioPlaybackIndicator>();
         }
 
         private void ValidateConfiguration()
@@ -132,6 +138,21 @@ namespace RealityHacks.Core
                 Debug.LogWarning("[RealityHacks] ⚠ SpeechToText: MISSING - Will send test queries instead");
             }
 
+            // Audio Manager
+            if (audioManager != null)
+            {
+                Debug.Log($"[RealityHacks] ✓ QueryAudioManager: FOUND");
+                if (audioIndicator != null)
+                {
+                    audioIndicator.Initialize(audioManager);
+                    Debug.Log($"[RealityHacks] ✓ AudioPlaybackIndicator: FOUND");
+                }
+            }
+            else
+            {
+                Debug.LogWarning("[RealityHacks] ⚠ QueryAudioManager: MISSING - No TTS audio playback");
+            }
+
             Debug.Log("[RealityHacks] ================================");
         }
 
@@ -190,6 +211,12 @@ namespace RealityHacks.Core
                 LogToTerminal("[WARNING] Not connected to server. Attempting to connect...");
                 webSocketClient.Connect();
                 return;
+            }
+
+            // Stop any playing audio when starting a new query
+            if (audioManager != null)
+            {
+                audioManager.StopAudio();
             }
 
             Debug.Log("[QueryController] Starting microphone recording...");
@@ -280,6 +307,23 @@ namespace RealityHacks.Core
                 if (!string.IsNullOrEmpty(response.suggestedFollowUp))
                 {
                     LogToTerminal($"[SUGGESTION] {response.suggestedFollowUp}");
+                }
+
+                // Play TTS audio if available
+                Debug.Log($"[QueryController] Audio check - audioURL: '{response.audioURL}', audioManager: {(audioManager != null ? "SET" : "NULL")}");
+                if (string.IsNullOrEmpty(response.audioURL))
+                {
+                    LogToTerminal("[AUDIO] No audio URL in response");
+                }
+                else if (audioManager == null)
+                {
+                    LogToTerminal("[AUDIO] ERROR: QueryAudioManager not configured!");
+                    Debug.LogError("[QueryController] QueryAudioManager is null - add it to the scene!");
+                }
+                else
+                {
+                    LogToTerminal($"[AUDIO] Playing: {response.audioURL}");
+                    _ = audioManager.PlayResponseAudio(response.audioURL);
                 }
             }
             else if (response.type == "clarification_needed")
