@@ -64,7 +64,7 @@ Caregivers aren't just watching passively—they're setting up the system to wor
 *   **Location Boundaries**: Define safe zones and get alerts if they're crossed.
 
 ### 📸 Caregiver App Screens
-<img width="5016" height="4802" alt="Frame 34" src="https://github.com/user-attachments/assets/e6aca7bf-1888-46ad-975e-62276c3e6027" />
+<img width="5016" height="4802" alt="Frame 34 (1)" src="https://github.com/user-attachments/assets/04ac8a44-5b20-4d24-ae53-1fdf9f8d3feb" />
 
 ---
 
