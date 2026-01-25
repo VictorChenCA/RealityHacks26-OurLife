@@ -15,8 +15,8 @@ namespace RealityHacks.UI
         [SerializeField] private int maxLines = 50;
         
         [Header("Scroll Settings")]
-        [SerializeField] private float scrollSpeed = 0.5f;
-        [SerializeField] private float joystickDeadzone = 0.2f;
+        [SerializeField] private float scrollSpeed = 2f;
+        [SerializeField] private float joystickDeadzone = 0.15f;
         
         private bool autoScroll = true;
 
@@ -48,11 +48,21 @@ namespace RealityHacks.UI
             inputManager = FindObjectOfType<RealityHacks.Input.VRInputManager>();
         }
 
+        private float scrollDebugTimer = 0f;
+        
         private void Update()
         {
             if (!isVisible || inputManager == null) return;
             
             float joystickY = inputManager.RightJoystick.y;
+            
+            // Debug log joystick value periodically
+            scrollDebugTimer += Time.deltaTime;
+            if (scrollDebugTimer >= 1f && Mathf.Abs(joystickY) > 0.01f)
+            {
+                scrollDebugTimer = 0f;
+                Debug.Log($"[DebugTerminal] Joystick Y: {joystickY:F2}, ScrollPos: {scrollRect?.verticalNormalizedPosition:F2}");
+            }
             
             // If joystick moved, disable auto-scroll and scroll manually
             if (Mathf.Abs(joystickY) > joystickDeadzone)

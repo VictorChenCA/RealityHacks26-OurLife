@@ -181,10 +181,14 @@ Recent Context:
 - Last hour summary: {last_hour_summary}
 - Last day summary: {last_day_summary}
 
-Query: "{query_text}"
+Recent Queries (conversation history):
+{recent_queries}
+
+Current Query: "{query_text}"
 Date range: {date_range}
 
-Determine what data is needed to answer this query. Return a JSON object:
+Determine what data is needed to answer this query. Consider conversation context for follow-ups.
+Return a JSON object:
 {{
   "queryType": "person" | "event" | "location" | "time" | "general",
   "needsFaceImages": true/false,
@@ -195,17 +199,24 @@ Determine what data is needed to answer this query. Return a JSON object:
     "dailySummaries": true/false,
     "specificDates": ["YYYY-MM-DD"]
   }},
+  "needsMoreQueryContext": 0-20,
   "needsClarification": true/false,
   "clarificationQuestion": "question if clarification needed, else null"
 }}
+
+Note: Set "needsMoreQueryContext" to fetch additional conversation history (0 = use default 5, up to 20 max).
 
 Return ONLY valid JSON, no markdown formatting."""
 
 QUERY_ANSWER_PROMPT = """You are a memory assistant helping a user recall their experiences.
 Be warm, helpful, and specific. Reference actual details from the memories.
+Consider recent conversation context to provide coherent follow-up answers.
 
 User Profile:
 {user_profile}
+
+Recent Queries (conversation context):
+{recent_queries}
 
 Relevant Memories:
 {memory_context}
@@ -213,9 +224,10 @@ Relevant Memories:
 Relevant Contacts:
 {contacts_info}
 
-Query: "{query_text}"
+Current Query: "{query_text}"
 
-Provide a helpful, conversational answer. Return a JSON object:
+Provide a helpful, conversational answer. If this follows up on a recent query, maintain context.
+Return a JSON object:
 {{
   "answer": "Your conversational response",
   "confidence": 0.0-1.0,
@@ -490,6 +502,46 @@ class FirestoreRepo:
             self._mem.daily_summaries[doc_id] = doc
             return
         await self._client.collection("daily_summaries").document(doc_id).set(doc)
+
+    # -------------------------------------------------------------------------
+    # Recent Queries
+    # -------------------------------------------------------------------------
+    async def get_recent_queries(self, user_id: str) -> Optional[Dict[str, Any]]:
+        doc_id = f"queries_{user_id}"
+        if not self._client:
+            return self._mem.processed_memories.get(("recent_queries", user_id))
+        snap = await self._client.collection("recent_queries").document(doc_id).get()
+        return snap.to_dict() if snap.exists else None
+
+    async def add_recent_query(self, user_id: str, query_record: Dict[str, Any]) -> None:
+        doc_id = f"queries_{user_id}"
+        now = datetime.now(timezone.utc)
+        query_record["timestamp"] = now
+        
+        if not self._client:
+            existing = self._mem.processed_memories.get(("recent_queries", user_id), {"queries": []})
+            existing["queries"].insert(0, query_record)
+            existing["queries"] = existing["queries"][:50]  # Keep last 50
+            existing["updatedAt"] = now
+            self._mem.processed_memories[("recent_queries", user_id)] = existing
+            return
+        
+        doc_ref = self._client.collection("recent_queries").document(doc_id)
+        snap = await doc_ref.get()
+        if snap.exists:
+            data = snap.to_dict()
+            queries = data.get("queries", [])
+        else:
+            queries = []
+        
+        queries.insert(0, query_record)
+        queries = queries[:50]  # Keep last 50 queries
+        
+        await doc_ref.set({
+            "userId": user_id,
+            "queries": queries,
+            "updatedAt": now
+        })
 
     # -------------------------------------------------------------------------
     # Legacy processed_memories (kept for backwards compatibility)
@@ -1221,10 +1273,22 @@ def _serialize_capture(doc: Dict[str, Any]) -> Dict[str, Any]:
 async def _process_unity_query(user_id: str, query_text: str, date_range: Optional[Dict], include_faces: bool, max_images: int, user_image: Optional[str] = None) -> Dict[str, Any]:
     profile = await repo.get_user_profile(user_id)
     contacts_doc = await repo.get_contacts(user_id)
+    recent_queries_doc = await repo.get_recent_queries(user_id)
     
     profile_str = json.dumps(profile, default=str) if profile else "No profile available"
     contacts_list = contacts_doc.get("contacts", []) if contacts_doc else []
     contacts_summary = ", ".join([f"{c.get('name')} ({c.get('relationship')})" for c in contacts_list[:20]]) or "No contacts"
+    
+    # Format recent queries for conversation context
+    recent_queries_list = []
+    if recent_queries_doc:
+        for q in recent_queries_doc.get("queries", [])[:5]:
+            recent_queries_list.append({
+                "query": q.get("query"),
+                "answer": q.get("answer", "")[:200],
+                "timestamp": str(q.get("timestamp"))
+            })
+    recent_queries_str = json.dumps(recent_queries_list, default=str, indent=2) if recent_queries_list else "No recent queries"
     
     last_hour = profile.get("lastHourSummary", "No recent hourly summary") if profile else "No data"
     last_day = profile.get("lastDaySummary", "No recent daily summary") if profile else "No data"
@@ -1238,6 +1302,7 @@ async def _process_unity_query(user_id: str, query_text: str, date_range: Option
         contacts_summary=contacts_summary,
         last_hour_summary=last_hour,
         last_day_summary=last_day,
+        recent_queries=recent_queries_str,
         query_text=query_text,
         date_range=date_range_str
     )
@@ -1249,12 +1314,31 @@ async def _process_unity_query(user_id: str, query_text: str, date_range: Option
         return {"ok": False, "error": "query_routing_failed", "detail": str(e)}
     
     if router_result.get("needsClarification"):
+        # Return clarification as a regular response - user can follow up with new query
+        # Recent queries context will maintain conversation continuity
         return {
-            "type": "clarification_needed",
+            "type": "query_answer",
             "ok": True,
-            "message": router_result.get("clarificationQuestion", "Could you please clarify your question?"),
-            "options": []
+            "answer": router_result.get("clarificationQuestion", "Could you please clarify your question?"),
+            "confidence": 0.5,
+            "sources": [],
+            "relatedContacts": [],
+            "attachedImages": []
         }
+    
+    # Check if router needs more query context
+    more_context = router_result.get("needsMoreQueryContext", 0)
+    if more_context and more_context > 5 and recent_queries_doc:
+        extended_count = min(more_context, 20)
+        recent_queries_list = []
+        for q in recent_queries_doc.get("queries", [])[:extended_count]:
+            recent_queries_list.append({
+                "query": q.get("query"),
+                "answer": q.get("answer", "")[:200],
+                "timestamp": str(q.get("timestamp"))
+            })
+        recent_queries_str = json.dumps(recent_queries_list, default=str, indent=2)
+        logger.info("[QUERY_DATA] Extended query context to %d queries", len(recent_queries_list))
     
     memory_context = []
     
@@ -1323,6 +1407,7 @@ async def _process_unity_query(user_id: str, query_text: str, date_range: Option
     
     answer_prompt = QUERY_ANSWER_PROMPT.format(
         user_profile=profile_str,
+        recent_queries=recent_queries_str,
         memory_context=json.dumps(memory_context, default=str, indent=2),
         contacts_info=json.dumps(contacts_info, default=str),
         query_text=query_text
@@ -1434,6 +1519,18 @@ async def ws_query(websocket: WebSocket, user_id: str) -> None:
                     elapsed_ms,
                     (result.get("answer") or "")[:150]
                 )
+                
+                # Save query to recent queries
+                await repo.add_recent_query(user_id, {
+                    "query": query_text,
+                    "imageURL": image_url,
+                    "dateRange": date_range,
+                    "responseType": result.get("type"),
+                    "answer": result.get("answer", "")[:500],  # Truncate for storage
+                    "confidence": result.get("confidence"),
+                    "elapsed_ms": round(elapsed_ms),
+                    "ok": result.get("ok", False)
+                })
                 
                 await manager.send_json(websocket, result)
                 

@@ -69,12 +69,8 @@ Client                          Backend                      Cloud Storage
    |                               |                              |
    |-- {"text":"...", "imageURL":...} ->|                         |
    |                               |-- Gemini Processing          |
-   |                               |                              |
-   |<-- {"type":"response",...} ---|  (final answer)              |
-   |                               |                              |
-   |   [OR if clarification needed]|                              |
-   |<-- {"type":"clarification_needed",...} --|                   |
-   |-- {"text":"follow-up"} ------>|                              |
+   |                               |   (uses recent queries       |
+   |                               |    for context)              |
    |<-- {"type":"response",...} ---|                              |
 ```
 
@@ -130,7 +126,8 @@ WebSocket: wss://{host}/ws/query/{user_id}
 }
 ```
 
-### Follow-up (after clarification)
+### Follow-up Query
+Simply send a new query - recent queries are stored and provided as context:
 ```json
 {
   "text": "The afternoon one, around 2pm"
@@ -166,16 +163,6 @@ WebSocket: wss://{host}/ws/query/{user_id}
     "https://storage.googleapis.com/..."
   ],
   "suggestedFollowUp": "Would you like to know more about what you discussed?"
-}
-```
-
-### Clarification Needed
-```json
-{
-  "type": "clarification_needed",
-  "ok": true,
-  "message": "I found multiple coffee shop visits yesterday. Could you specify which one? Morning (9am) or afternoon (2pm)?",
-  "options": ["Morning visit at 9am", "Afternoon visit at 2pm"]
 }
 ```
 
@@ -223,26 +210,31 @@ When `includeFaces` is true and query involves people:
 
 ---
 
-## Two-Way Clarification
+## Conversation Context
 
-### Gemini Fetches Internally
-When Gemini determines it needs more data that exists in the system:
+Recent queries (last 5-20) are automatically stored and provided to Gemini for context.
+
+### How It Works
 ```
-Query: "What did I do last Tuesday?"
-→ Gemini: needs daily_summary for 2026-01-21
-→ Backend: fetches internally, no user interaction
-→ Gemini: generates answer with full context
+Query 1: "What did I do yesterday?"
+→ Response: "You went to the coffee shop and met John..."
+→ Stored in recent_queries
+
+Query 2: "Tell me more about that meeting"
+→ Gemini sees Query 1 + Response as context
+→ Understands "that meeting" refers to John
+→ Provides detailed follow-up
 ```
 
-### Gemini Asks User
-When the query is ambiguous or data doesn't exist:
+### Clarification Flow
+When a query is ambiguous, Gemini responds with a clarifying question as a regular response:
 ```
 Query: "Tell me about the meeting"
-→ Gemini: unclear which meeting
-→ Backend: returns clarification_needed
-→ Client: displays options to user
-→ User: selects or clarifies
-→ Backend: processes refined query
+→ Response: "I found multiple meetings yesterday. Which one - the morning standup at 9am or the coffee chat with John at 2pm?"
+
+Query: "The one with John"
+→ Gemini uses recent query context
+→ Response: "Your meeting with John at 2pm was at Blue Bottle Coffee..."
 ```
 
 ---
