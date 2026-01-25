@@ -27,6 +27,11 @@ except Exception:  # pragma: no cover
     storage = None  # type: ignore
 
 try:
+    from google.cloud import texttospeech  # type: ignore
+except Exception:  # pragma: no cover
+    texttospeech = None  # type: ignore
+
+try:
     import google.generativeai as genai  # type: ignore
 except Exception:  # pragma: no cover
     genai = None  # type: ignore
@@ -609,6 +614,109 @@ class ConnectionManager:
 
 
 manager = ConnectionManager()
+
+
+# =============================================================================
+# TEXT-TO-SPEECH SERVICE
+# =============================================================================
+
+class TTSService:
+    """Google Cloud Text-to-Speech service for generating audio from query responses."""
+    
+    MAX_TEXT_LENGTH = 5000
+    
+    def __init__(self):
+        self._client = None
+        self._voice = None
+        self._audio_config = None
+        
+        if texttospeech is None:
+            logger.warning("google-cloud-texttospeech not available; TTS disabled")
+            return
+        
+        try:
+            self._client = texttospeech.TextToSpeechClient()
+            self._voice = texttospeech.VoiceSelectionParams(
+                language_code="en-US",
+                name="en-US-Neural2-F",
+                ssml_gender=texttospeech.SsmlVoiceGender.FEMALE
+            )
+            self._audio_config = texttospeech.AudioConfig(
+                audio_encoding=texttospeech.AudioEncoding.MP3
+            )
+            logger.info("TTS service initialized with voice en-US-Neural2-F")
+        except Exception:
+            logger.exception("Failed to initialize TTS client")
+            self._client = None
+    
+    @property
+    def is_available(self) -> bool:
+        return self._client is not None
+    
+    async def generate_speech(self, text: str, query_id: str, user_id: str) -> Optional[str]:
+        """
+        Generate speech from text and upload to Cloud Storage.
+        
+        Returns the public URL of the audio file, or None on failure.
+        """
+        if not self.is_available:
+            logger.debug("TTS not available, skipping audio generation")
+            return None
+        
+        if not text or not text.strip():
+            return None
+        
+        try:
+            # Truncate text if too long
+            if len(text) > self.MAX_TEXT_LENGTH:
+                text = text[:self.MAX_TEXT_LENGTH]
+                logger.info("TTS text truncated to %d chars for query_id=%s", self.MAX_TEXT_LENGTH, query_id)
+            
+            # Synthesize speech (sync call wrapped in to_thread)
+            def _synthesize():
+                synthesis_input = texttospeech.SynthesisInput(text=text)
+                response = self._client.synthesize_speech(
+                    input=synthesis_input,
+                    voice=self._voice,
+                    audio_config=self._audio_config
+                )
+                return response.audio_content
+            
+            audio_content = await asyncio.to_thread(_synthesize)
+            
+            if not audio_content:
+                logger.warning("TTS returned empty audio for query_id=%s", query_id)
+                return None
+            
+            # Upload to Cloud Storage
+            if storage is None:
+                logger.warning("Storage not available, cannot upload TTS audio")
+                return None
+            
+            bucket_name = PROCESSED_MEDIA_BUCKET
+            object_name = f"query-responses/{user_id}/{query_id}/response.mp3"
+            
+            def _upload():
+                import io
+                client = storage.Client(project=os.environ.get("GCP_PROJECT_ID"))
+                bucket = client.bucket(bucket_name)
+                blob = bucket.blob(object_name)
+                # Use BytesIO to avoid any ACL operations with uniform bucket access
+                audio_file = io.BytesIO(audio_content)
+                blob.upload_from_file(audio_file, content_type="audio/mpeg", rewind=True)
+                return f"https://storage.googleapis.com/{bucket_name}/{object_name}"
+            
+            public_url = await asyncio.to_thread(_upload)
+            
+            logger.info("TTS audio uploaded: query_id=%s url=%s", query_id, public_url)
+            return public_url
+            
+        except Exception as e:
+            logger.exception("TTS generation failed for query_id=%s: %s", query_id, e)
+            return None
+
+
+tts_service = TTSService()
 
 
 @app.get("/")
@@ -1511,6 +1619,9 @@ async def ws_query(websocket: WebSocket, user_id: str) -> None:
                 max_images = min(req.get("maxImages", DEFAULT_QUERY_IMAGES), MAX_QUERY_IMAGES)
                 image_url = req.get("imageURL")  # Optional: URL from POST /query-upload
                 
+                # Generate unique query ID
+                query_id = str(uuid.uuid4())[:8]
+                
                 # Download image if URL provided
                 user_image = None
                 if image_url:
@@ -1518,8 +1629,9 @@ async def ws_query(websocket: WebSocket, user_id: str) -> None:
                 
                 # Log incoming query content
                 logger.info(
-                    "[QUERY_DATA] user=%s query=%s dateRange=%s includeFaces=%s imageURL=%s",
+                    "[QUERY_DATA] user=%s query_id=%s query=%s dateRange=%s includeFaces=%s imageURL=%s",
                     user_id,
+                    query_id,
                     query_text[:300],
                     json.dumps(date_range) if date_range else "none",
                     include_faces,
@@ -1530,23 +1642,45 @@ async def ws_query(websocket: WebSocket, user_id: str) -> None:
                 result = await _process_unity_query(user_id, query_text, date_range, include_faces, max_images, user_image)
                 elapsed_ms = (time.time() - start_time) * 1000
                 
+                # Add queryId to result
+                result["queryId"] = query_id
+                
+                # Generate TTS audio for successful responses (non-blocking on failure)
+                audio_url = None
+                if result.get("ok") and result.get("answer"):
+                    try:
+                        audio_url = await tts_service.generate_speech(
+                            result["answer"],
+                            query_id,
+                            user_id
+                        )
+                    except Exception as tts_err:
+                        logger.warning("TTS failed for query_id=%s: %s", query_id, tts_err)
+                
+                # Add audioURL to result (null if TTS failed or unavailable)
+                result["audioURL"] = audio_url
+                
                 # Log response summary
                 logger.info(
-                    "[QUERY_DATA] user=%s response_ok=%s confidence=%s elapsed_ms=%.0f answer_preview=%s",
+                    "[QUERY_DATA] user=%s query_id=%s response_ok=%s confidence=%s elapsed_ms=%.0f audioURL=%s answer_preview=%s",
                     user_id,
+                    query_id,
                     result.get("ok"),
                     result.get("confidence", "n/a"),
                     elapsed_ms,
+                    "yes" if audio_url else "no",
                     (result.get("answer") or "")[:150]
                 )
                 
                 # Save query to recent queries
                 await repo.add_recent_query(user_id, {
                     "query": query_text,
+                    "queryId": query_id,
                     "imageURL": image_url,
                     "dateRange": date_range,
                     "responseType": result.get("type"),
                     "answer": result.get("answer", "")[:500],  # Truncate for storage
+                    "audioURL": audio_url,
                     "confidence": result.get("confidence"),
                     "elapsed_ms": round(elapsed_ms),
                     "ok": result.get("ok", False)
