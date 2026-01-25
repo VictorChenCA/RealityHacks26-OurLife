@@ -30,19 +30,19 @@ public class SpatialCarousel : MonoBehaviour
             ref _rotationVelocity,
             _smoothTime
         );
-        transform.rotation = Quaternion.Euler(0, _currentYRotation, 0);
+        // transform.rotation = Quaternion.Euler(0, _currentYRotation, 0);
 
         if (_autoAlignChildren)
         {
             foreach (Transform child in transform)
             {
                 // 1. 让子物体看向中心点
-                child.LookAt(Vector3.zero);
+                // child.LookAt(Vector3.zero);
 
                 // 2. 修正 Plane 的旋转偏移
                 // 因为你的 Plane 初始 X 是 -90
                 // LookAt 会让 Z 轴指向中心，我们需要补回 X 轴的偏转让正面 (Y轴) 对着中心
-                child.Rotate(-90, 0, 0, Space.Self);
+                // child.Rotate(0, 0, 0, Space.Self);
             }
         }
     }
