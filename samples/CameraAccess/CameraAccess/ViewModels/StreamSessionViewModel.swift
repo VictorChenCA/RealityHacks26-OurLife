@@ -17,6 +17,7 @@
 import MWDATCamera
 import MWDATCore
 import SwiftUI
+import CoreLocation
 
 enum StreamingStatus {
   case streaming
@@ -78,6 +79,9 @@ class StreamSessionViewModel: ObservableObject {
   
   @Published public var queryStatus: String = ""
   @Published public var lastAIResponse: String = ""  // Caption of what AI said
+  
+  // Current Location (cached from view)
+  public var currentLocation: CLLocationCoordinate2D?
   
   private var capturedTranscription: String?
   private var periodicCaptureTask: Task<Void, Never>?
@@ -563,7 +567,16 @@ class StreamSessionViewModel: ObservableObject {
     
     Task { @MainActor in
       do {
-        try await self.queryClient.sendQuery(image: imageToSend, text: transcription)
+        // Include location if available
+        let lat = self.currentLocation?.latitude
+        let lon = self.currentLocation?.longitude
+        
+        try await self.queryClient.sendQuery(
+            image: imageToSend, 
+            text: transcription,
+            latitude: lat,
+            longitude: lon
+        )
         self.uploadStatus = "Query sent!"
         NSLog("[StreamSessionViewModel] ✅ Query sent successfully")
         

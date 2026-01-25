@@ -31,9 +31,8 @@ class LocationManager: NSObject, ObservableObject {
   override init() {
     super.init()
     locationManager.delegate = self
-    locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters  // Battery efficient
-    locationManager.distanceFilter = 50  // Update every 50 meters
-    // Note: allowsBackgroundLocationUpdates is set when starting updates, not at init
+    locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+    locationManager.distanceFilter = 50
     locationManager.pausesLocationUpdatesAutomatically = true
     authorizationStatus = locationManager.authorizationStatus
     NSLog("[LocationManager] Initialized - status: \(authorizationStatus.rawValue)")
@@ -59,26 +58,8 @@ class LocationManager: NSObject, ObservableObject {
     authorizationStatus == .authorizedAlways
   }
   
-  // MARK: - Location Updates
-  
-  func startUpdatingLocation() {
-    guard hasLocationPermission else {
-      NSLog("[LocationManager] Cannot start - no permission")
-      return
-    }
-    // Enable background updates only when we have permission and are actively using location
-    if hasAlwaysPermission {
-      locationManager.allowsBackgroundLocationUpdates = true
-    }
-    locationManager.startUpdatingLocation()
-    NSLog("[LocationManager] Started location updates")
-  }
-  
-  func stopUpdatingLocation() {
-    locationManager.stopUpdatingLocation()
-    NSLog("[LocationManager] Stopped location updates")
-  }
-  
+  // MARK: - Location Requests
+
   func requestSingleLocation() {
     guard hasLocationPermission else {
       NSLog("[LocationManager] Cannot request location - no permission")
@@ -91,15 +72,13 @@ class LocationManager: NSObject, ObservableObject {
   // MARK: - Region Monitoring (Geofencing)
   
   func startMonitoring(region: CLCircularRegion) {
-    guard hasAlwaysPermission else {
-      NSLog("[LocationManager] Cannot monitor region - need Always permission")
+    guard CLLocationManager.isMonitoringAvailable(for: CLCircularRegion.self) else {
+      NSLog("[LocationManager] Region monitoring not available")
       return
     }
     
-    guard CLLocationManager.isMonitoringAvailable(for: CLCircularRegion.self) else {
-      NSLog("[LocationManager] Region monitoring not available on this device")
-      return
-    }
+    // Also start standard location updates to ensure we have a current location for the UI
+    locationManager.startUpdatingLocation()
     
     locationManager.startMonitoring(for: region)
     NSLog("[LocationManager] Started monitoring region: \(region.identifier)")
@@ -136,7 +115,6 @@ extension LocationManager: CLLocationManagerDelegate {
     guard let location = locations.last else { return }
     Task { @MainActor in
       self.currentLocation = location
-      NSLog("[LocationManager] Location updated: \(location.coordinate.latitude), \(location.coordinate.longitude)")
     }
   }
   
@@ -164,7 +142,7 @@ extension LocationManager: CLLocationManagerDelegate {
   }
   
   nonisolated func locationManager(_ manager: CLLocationManager, monitoringDidFailFor region: CLRegion?, withError error: Error) {
-    NSLog("[LocationManager] Monitoring failed for \(region?.identifier ?? "unknown"): \(error.localizedDescription)")
+    NSLog("[LocationManager] Monitoring failed: \(error.localizedDescription)")
   }
   
   nonisolated func locationManager(_ manager: CLLocationManager, didStartMonitoringFor region: CLRegion) {

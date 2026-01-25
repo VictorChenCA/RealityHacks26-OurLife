@@ -10,7 +10,6 @@
 // GeofenceManager.swift
 //
 // Manages geofenced locations and triggers audio/message events.
-// Coordinates between LocationManager and app UI/audio.
 //
 
 import Foundation
@@ -26,17 +25,14 @@ class GeofenceManager: ObservableObject {
   @Published var showExitAlert: Bool = false
   @Published var exitAlertMessage: String = ""
   
-  // Callbacks for the app to handle
+  // Callbacks
   var onEnterGeofence: ((Geofence) -> Void)?
   var onExitGeofence: ((Geofence) -> Void)?
   
   init(locationManager: LocationManager) {
     self.locationManager = locationManager
-    
-    // Load saved geofences
     self.geofences = Geofence.loadAll()
     
-    // Setup callbacks from LocationManager
     locationManager.onEnterRegion = { [weak self] regionId in
       Task { @MainActor in
         self?.handleEnterRegion(regionId)
@@ -60,25 +56,28 @@ class GeofenceManager: ObservableObject {
     } else if !locationManager.hasAlwaysPermission {
       locationManager.requestAlwaysPermission()
     }
+    // Try to warm up GPS
+    locationManager.requestSingleLocation()
   }
   
   var hasRequiredPermissions: Bool {
     locationManager.hasAlwaysPermission
   }
   
+  var currentLocation: CLLocation? {
+    locationManager.currentLocation
+  }
+  
   // MARK: - Geofence Management
   
   func addGeofence(_ geofence: Geofence) {
-    // iOS limit: max 20 regions
     guard geofences.count < 20 else {
-      NSLog("[GeofenceManager] Cannot add - max 20 geofences reached")
+      NSLog("[GeofenceManager] Cannot add - max 20 geofences")
       return
     }
     
     geofences.append(geofence)
     Geofence.saveAll(geofences)
-    
-    // Start monitoring
     locationManager.startMonitoring(region: geofence.region)
     NSLog("[GeofenceManager] Added geofence: \(geofence.name)")
   }
@@ -98,12 +97,6 @@ class GeofenceManager: ObservableObject {
   }
   
   func startMonitoringAll() {
-    guard hasRequiredPermissions else {
-      NSLog("[GeofenceManager] Cannot start monitoring - need Always permission")
-      requestPermissions()
-      return
-    }
-    
     for geofence in geofences {
       locationManager.startMonitoring(region: geofence.region)
     }
@@ -114,74 +107,69 @@ class GeofenceManager: ObservableObject {
   
   private func handleEnterRegion(_ regionId: String) {
     guard let geofence = geofences.first(where: { $0.id.uuidString == regionId }) else {
-      NSLog("[GeofenceManager] Unknown region entered: \(regionId)")
       return
     }
     
     NSLog("[GeofenceManager] 📍 ENTERED: \(geofence.name)")
     lastEvent = GeofenceEvent(type: .enter, geofence: geofence, timestamp: Date())
-    
-    // Trigger callback
     onEnterGeofence?(geofence)
   }
   
   private func handleExitRegion(_ regionId: String) {
     guard let geofence = geofences.first(where: { $0.id.uuidString == regionId }) else {
-      NSLog("[GeofenceManager] Unknown region exited: \(regionId)")
       return
     }
     
     NSLog("[GeofenceManager] 📍 EXITED: \(geofence.name)")
     lastEvent = GeofenceEvent(type: .exit, geofence: geofence, timestamp: Date())
     
-    // Show exit alert if message exists
     if let exitMessage = geofence.exitMessage {
       exitAlertMessage = exitMessage
       showExitAlert = true
     }
     
-    // Trigger callback
     onExitGeofence?(geofence)
   }
   
-  // MARK: - Convenience Methods
+  // MARK: - Test Helpers
   
-  func addTestGeofence(at location: CLLocation, name: String = "Test Location") {
+  func addTestGeofence(name: String, latitude: Double, longitude: Double, enterMessage: String?, exitMessage: String?) {
     let geofence = Geofence(
       name: name,
-      location: location,
-      radius: 100,
-      enterMessage: "You have arrived at \(name)",
-      exitMessage: "You have left \(name)"
-    )
-    addGeofence(geofence)
-  }
-  
-  func addGeofenceAtCurrentLocation(name: String, enterMessage: String?, exitMessage: String?) {
-    guard let location = locationManager.currentLocation else {
-      NSLog("[GeofenceManager] Cannot add - no current location")
-      locationManager.requestSingleLocation()
-      return
-    }
-    
-    let geofence = Geofence(
-      name: name,
-      location: location,
+      latitude: latitude,
+      longitude: longitude,
       radius: 100,
       enterMessage: enterMessage,
       exitMessage: exitMessage
     )
     addGeofence(geofence)
   }
+  
+  // Create a geofence at the user's current physical location
+  func addGeofenceAtCurrentLocation(name: String, enterMessage: String?, exitMessage: String?) -> Bool {
+    guard let location = locationManager.currentLocation else {
+      NSLog("[GeofenceManager] Cannot add - no current location")
+      // Force an update for next time
+      locationManager.requestSingleLocation() 
+      return false
+    }
+    
+    let geofence = Geofence(
+      name: name,
+      latitude: location.coordinate.latitude,
+      longitude: location.coordinate.longitude,
+      radius: 20,  // Reduced to 20m for small space/hackathon testing
+      enterMessage: enterMessage,
+      exitMessage: exitMessage
+    )
+    addGeofence(geofence)
+    return true
+  }
 }
 
 // MARK: - Event Model
 struct GeofenceEvent: Equatable {
-  enum EventType {
-    case enter
-    case exit
-  }
-  
+  enum EventType { case enter, exit }
   let type: EventType
   let geofence: Geofence
   let timestamp: Date

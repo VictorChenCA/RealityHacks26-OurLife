@@ -31,8 +31,12 @@ struct CameraAccessApp: App {
   #endif
   private let wearables: WearablesInterface
   @StateObject private var wearablesViewModel: WearablesViewModel
+  
+  // Location and Geofencing - lazy initialized
+  @StateObject private var geofenceManager: GeofenceManager
 
   init() {
+    // Initialize Wearables SDK first
     do {
       try Wearables.configure()
     } catch {
@@ -43,6 +47,10 @@ struct CameraAccessApp: App {
     let wearables = Wearables.shared
     self.wearables = wearables
     self._wearablesViewModel = StateObject(wrappedValue: WearablesViewModel(wearables: wearables))
+    
+    // Initialize geofencing AFTER wearables
+    let locManager = LocationManager()
+    self._geofenceManager = StateObject(wrappedValue: GeofenceManager(locationManager: locManager))
   }
 
   var body: some Scene {
@@ -50,6 +58,7 @@ struct CameraAccessApp: App {
       // Main app view with access to the shared Wearables SDK instance
       // The Wearables.shared singleton provides the core DAT API
       MainAppView(wearables: Wearables.shared, viewModel: wearablesViewModel)
+        .environmentObject(geofenceManager)
         // Show error alerts for view model failures
         .alert("Error", isPresented: $wearablesViewModel.showError) {
           Button("OK") {
@@ -57,6 +66,14 @@ struct CameraAccessApp: App {
           }
         } message: {
           Text(wearablesViewModel.errorMessage)
+        }
+        // Geofence exit alert
+        .alert("📍 Location Alert", isPresented: $geofenceManager.showExitAlert) {
+          Button("OK") {
+            geofenceManager.showExitAlert = false
+          }
+        } message: {
+          Text(geofenceManager.exitAlertMessage)
         }
         #if DEBUG
       .sheet(isPresented: $debugMenuViewModel.showDebugMenu) {

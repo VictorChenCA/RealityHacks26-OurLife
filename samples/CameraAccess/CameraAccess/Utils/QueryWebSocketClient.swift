@@ -134,7 +134,7 @@ class QueryWebSocketClient: NSObject {
   }
   
   /// Send query with image (via upload) and text
-  func sendQuery(image: UIImage?, text: String, includeFaces: Bool = true, maxImages: Int = 8) async throws {
+  func sendQuery(image: UIImage?, text: String, includeFaces: Bool = true, maxImages: Int = 8, latitude: Double? = nil, longitude: Double? = nil) async throws {
     log("[QueryWebSocketClient] 📤 sendQuery() called - text: '\(text)'")
     
     // Auto-reconnect if needed
@@ -164,6 +164,13 @@ class QueryWebSocketClient: NSObject {
     
     if let url = imageURL {
         request["imageURL"] = url
+    }
+    
+    // Add location if available
+    if let lat = latitude, let lon = longitude {
+        request["latitude"] = lat
+        request["longitude"] = lon
+        log("[QueryWebSocketClient] 📍 Adding location to query: \(lat), \(lon)")
     }
     
     guard let jsonData = try? JSONSerialization.data(withJSONObject: request, options: []),

@@ -16,10 +16,12 @@
 
 import MWDATCore
 import SwiftUI
+import CoreLocation
 
 struct StreamView: View {
   @ObservedObject var viewModel: StreamSessionViewModel
   @ObservedObject var wearablesVM: WearablesViewModel
+  @EnvironmentObject var geofenceManager: GeofenceManager
 
   var body: some View {
     ZStack {
@@ -67,18 +69,43 @@ struct StreamView: View {
               .clipShape(Circle())
           }
           
+          // Geofence Button
           Button(action: {
-            viewModel.ttsManager.speak("This is a longer test sentence to check the rate.")
+            addTestGeofence()
           }) {
-            Image(systemName: "text.bubble.fill")
-              .foregroundColor(.white)
+            Image(systemName: "mappin.circle.fill")
+              .foregroundColor(geofenceManager.geofences.isEmpty ? .white : .green)
               .padding(8)
               .background(Color.black.opacity(0.6))
               .clipShape(Circle())
           }
+          
+          // Clear Geofences Button (only show if there are geofences)
+          if !geofenceManager.geofences.isEmpty {
+            Button(action: {
+               geofenceManager.removeAll()
+               viewModel.ttsManager.speak("All geofences cleared")
+            }) {
+              Image(systemName: "trash.circle.fill")
+                .foregroundColor(.red)
+                .padding(8)
+                .background(Color.black.opacity(0.6))
+                .clipShape(Circle())
+            }
+          }
         }
         .padding(.top, 50)
         .padding(.trailing, 20)
+        
+        // Geofence count indicator
+        if !geofenceManager.geofences.isEmpty {
+          Text("📍 \(geofenceManager.geofences.count) geofence(s)")
+            .font(.caption)
+            .foregroundColor(.white)
+            .padding(6)
+            .background(Color.black.opacity(0.6))
+            .cornerRadius(8)
+        }
         
         Spacer()
       }
@@ -191,6 +218,16 @@ struct StreamView: View {
         }
       }
     }
+    .onAppear {
+      // Setup geofencing
+      setupGeofencing()
+    }
+    // Sync location to ViewModel for backend queries
+    .onReceive(Timer.publish(every: 2.0, on: .main, in: .common).autoconnect()) { _ in
+        if let loc = geofenceManager.currentLocation {
+            viewModel.currentLocation = loc.coordinate
+        }
+    }
     .onDisappear {
       Task {
         if viewModel.streamingStatus != .stopped {
@@ -208,6 +245,67 @@ struct StreamView: View {
           }
         )
       }
+    }
+  }
+  
+  // MARK: - Geofencing Helpers
+  
+  private func setupGeofencing() {
+    // Request permissions
+    geofenceManager.requestPermissions()
+    
+    // Wire up enter callback to speak via TTS
+    geofenceManager.onEnterGeofence = { geofence in
+      if let message = geofence.enterMessage {
+        viewModel.ttsManager.speak(message)
+      }
+    }
+    
+    // Start monitoring saved geofences
+    geofenceManager.startMonitoringAll()
+  }
+  
+  private func addTestGeofence() {
+    // 1. Remove existing "My Location" geofences to avoid clutter
+    let existing = geofenceManager.geofences.filter { $0.name == "My Location" || $0.name == "Test Location" }
+    for geo in existing {
+        geofenceManager.removeGeofence(geo)
+    }
+    
+    // 2. Try to add at CURRENT location
+    let success = geofenceManager.addGeofenceAtCurrentLocation(
+        name: "My Location",
+        enterMessage: "Welcome back! You have arrived at your saved location.",
+        exitMessage: "You have left your saved location."
+    )
+    
+    // 3. Handle Feedback
+    if success, let location = geofenceManager.geofences.last {
+         let lat = String(format: "%.4f", location.latitude)
+         let lon = String(format: "%.4f", location.longitude)
+         let message = "Updated Location: \(lat), \(lon)"
+         
+         viewModel.ttsManager.speak("Location updated")
+         viewModel.lastAIResponse = message
+    } else {
+        // Fallback
+        geofenceManager.addTestGeofence(
+          name: "Test Location",
+          latitude: 42.3601,
+          longitude: -71.0942,
+          enterMessage: "You have arrived at the test location.",
+          exitMessage: "You have left the test location."
+        )
+        let message = "GPS not ready. Using Boston (Test Mode)"
+        viewModel.ttsManager.speak("GPS not ready, using default location")
+        viewModel.lastAIResponse = message
+    }
+    
+    // 4. Auto-hide message after 3 seconds
+    DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+        if self.viewModel.lastAIResponse.contains("Location") || self.viewModel.lastAIResponse.contains("GPS") {
+            self.viewModel.lastAIResponse = ""
+        }
     }
   }
 }
