@@ -1,4 +1,4 @@
-<img width="5016" height="4802" alt="Frame 34" src="https://github.com/user-attachments/assets/42259e91-0215-4e9b-b115-e4d13c9d8ebe" /># 🧠 OurLife: A Second Brain for Those Who Need It Most
+# 🧠 OurLife: A Second Brain for Those Who Need It Most
 
 ### *Helping people with memory loss live independently, with dignity, and stay connected to their loved ones.*
 
