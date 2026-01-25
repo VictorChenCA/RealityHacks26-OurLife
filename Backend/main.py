@@ -89,8 +89,11 @@ HOURLY_SUMMARY_PROMPT = """You are creating an hourly summary for a memory assis
 The user relies on these summaries to remember their day.
 NOTE: There may be 60+ memory captures per hour - this is normal. Synthesize them into a comprehensive narrative.
 
-Given these memory captures from the past hour:
+Memory captures from this hour:
 {captures_json}
+
+Queries made this hour (user was thinking about these topics):
+{queries_json}
 
 Create a detailed, comprehensive summary. Return a JSON object:
 {{
@@ -1023,8 +1026,25 @@ async def _check_and_run_hourly_condensation(user_id: str, capture_ts: datetime)
             "analysis": c.get("geminiAnalysis", {})
         })
     
+    # Fetch queries made during this hour
+    queries_for_prompt = []
+    recent_queries_doc = await repo.get_recent_queries(user_id)
+    if recent_queries_doc:
+        for q in recent_queries_doc.get("queries", []):
+            q_ts = q.get("timestamp")
+            if isinstance(q_ts, datetime):
+                if hour_start_utc <= q_ts <= hour_end_utc:
+                    queries_for_prompt.append({
+                        "timestamp": q_ts.isoformat(),
+                        "query": q.get("query"),
+                        "answer": q.get("answer", "")[:300]
+                    })
+    
     try:
-        prompt = HOURLY_SUMMARY_PROMPT.format(captures_json=json.dumps(captures_for_prompt, indent=2))
+        prompt = HOURLY_SUMMARY_PROMPT.format(
+            captures_json=json.dumps(captures_for_prompt, indent=2),
+            queries_json=json.dumps(queries_for_prompt, indent=2) if queries_for_prompt else "No queries this hour"
+        )
         summary_result = await _call_gemini_text(prompt)
         
         date_str = hour_start.date().isoformat()
