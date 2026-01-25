@@ -6,6 +6,22 @@
 
 ---
 
+## 💭 Why Meta Glasses + Meta Quest?
+
+We started with a simple question: **What is memory, and how can technology enhance it?**
+
+**Ray-Ban Meta glasses** are like a second pair of eyes and ears—a friend who's always with you, experiencing life from your perspective. They capture what you see and hear throughout the day, turning fleeting moments into something that can be recalled later. For memory, this is transformative: the glasses become a living record of your day, ready to remind you of what just happened.
+
+**Meta Quest** offers something different but equally powerful: the ability to *relive* experiences in a way that feels close to reality. That deep sense of immersion isn't just entertaining—it helps the brain consolidate memories more effectively. Reviewing the day's highlights in VR isn't passive watching; it's active re-experiencing.
+
+Together, these devices form a complete memory loop: **capture → recall → reinforce**.
+
+From there, we asked: *Who would benefit most from enhanced memory?*
+
+The answer led us to people living with dementia and Alzheimer's—and the caregivers who love them.
+
+---
+
 ## 😔 The Problem We're Solving
 
 For someone with dementia, every day can feel like walking through fog:
