@@ -70,7 +70,12 @@ class StreamSessionViewModel: ObservableObject {
   
   // Query Mode
   public let queryClient = QueryWebSocketClient()
-  @Published public var isQuerying: Bool = false
+  @Published public var isRecordingQuery: Bool = false
+  @Published public var isProcessingQuery: Bool = false
+  
+  // Computed property for legacy compatibility if needed, or update views to use new props
+  public var isQuerying: Bool { isRecordingQuery || isProcessingQuery }
+  
   @Published public var queryStatus: String = ""
   
   private var capturedTranscription: String?
@@ -94,7 +99,6 @@ class StreamSessionViewModel: ObservableObject {
     }
 
     // Subscribe to session state changes using the DAT SDK listener pattern
-    // State changes tell us when streaming starts, stops, or encounters issues
     stateListenerToken = streamSession.statePublisher.listen { [weak self] state in
       Task { @MainActor [weak self] in
         self?.updateStatusFromState(state)
@@ -102,7 +106,6 @@ class StreamSessionViewModel: ObservableObject {
     }
 
     // Subscribe to video frames from the device camera
-    // Each VideoFrame contains the raw camera data that we convert to UIImage
     videoFrameListenerToken = streamSession.videoFramePublisher.listen { [weak self] videoFrame in
       Task { @MainActor [weak self] in
         guard let self else { return }
@@ -117,7 +120,6 @@ class StreamSessionViewModel: ObservableObject {
     }
 
     // Subscribe to streaming errors
-    // Errors include device disconnection, streaming failures, etc.
     errorListenerToken = streamSession.errorPublisher.listen { [weak self] error in
       Task { @MainActor [weak self] in
         guard let self else { return }
@@ -131,46 +133,50 @@ class StreamSessionViewModel: ObservableObject {
     updateStatusFromState(streamSession.state)
 
     // Subscribe to photo capture events
-    // PhotoData contains the captured image in the requested format (JPEG/HEIC)
-    // Subscribe to photo capture events
     photoDataListenerToken = streamSession.photoDataPublisher.listen { [weak self] photoData in
       Task { @MainActor [weak self] in
         guard let self else { return }
         if let uiImage = UIImage(data: photoData.data) {
           self.capturedPhoto = uiImage
           
-          // BRANCH 1: Query Mode
-          if self.isQuerying {
+          // BRANCH 0: Query Recording Mode - Store photo for query (button is being held)
+          if self.isRecordingQuery {
+            self.queryImage = uiImage
+            NSLog("[StreamSessionViewModel] 📸 Query photo captured and stored")
+            return
+          }
+          
+          // BRANCH 1: Query Processing Mode (button released, sending query)
+          if self.isProcessingQuery {
              self.uploadStatus = "Sending query..."
              let textToSend = self.capturedTranscription ?? self.speechRecognizer.transcribedText
              self.capturedTranscription = nil
              
+             // Check if we actually have text or force a fallback
+             let finalQueryText = textToSend.isEmpty ? "What am I looking at?" : textToSend
+             
              do {
-               try await self.queryClient.sendQuery(image: uiImage, text: textToSend)
+               try await self.queryClient.sendQuery(image: uiImage, text: finalQueryText)
                self.uploadStatus = "Query sent!"
              } catch {
                self.uploadStatus = "Query failed: \(error.localizedDescription)"
                self.ttsManager.speak("Sorry, I couldn't send your question.")
-               self.isQuerying = false
+               self.isProcessingQuery = false
                self.startPeriodicCaptureTask()
              }
              return
           }
 
           // BRANCH 2: Regular Memory Capture
+          // Ensure we don't upload background memories while the user is actively recording a query
           if let manager = self.memoryCaptureManager {
             self.isUploading = true
             self.uploadStatus = "Uploading to backend..."
             
-            // Use the transcription captured during the timer tick, or fallback to current
             var textToSend = self.capturedTranscription ?? self.speechRecognizer.transcribedText
-            
-            // If transcription is empty, use "(silent)"
             if textToSend.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
               textToSend = "(silent)"
             }
-            
-            // Clear the captured text now that we've used it
             self.capturedTranscription = nil
             
             await manager.processCapture(photo: uiImage, transcription: textToSend)
@@ -237,14 +243,14 @@ class StreamSessionViewModel: ObservableObject {
     }
     
     do {
-    try memoryCaptureManager?.connect()
-    setupQueryClient()
-    try queryClient.connect()
-  } catch {
-    NSLog("[StreamSessionViewModel] Failed to connect WebSocket: \(error)")
-  }
+      try memoryCaptureManager?.connect()
+      setupQueryClient()
+      try queryClient.connect()
+    } catch {
+      NSLog("[StreamSessionViewModel] Failed to connect WebSocket: \(error)")
+    }
 
-  await streamSession.start()
+    await streamSession.start()
     
     // Start the 20-second capture loop
     startPeriodicCaptureTask()
@@ -369,7 +375,7 @@ class StreamSessionViewModel: ObservableObject {
       return "An unknown streaming error occurred."
     }
   }
-  
+
   // MARK: - Query Handling
   
   private func setupQueryClient() {
@@ -377,49 +383,147 @@ class StreamSessionViewModel: ObservableObject {
          NSLog(message)
     }
     
+    // When playback finishes (either TTS or Audio File), resume services
+    ttsManager.onSpeechEnded = { [weak self] in
+        Task { @MainActor [weak self] in
+            NSLog("[StreamSessionViewModel] 🗣️ Speech ended. Resuming background tasks...")
+            self?.startPeriodicCaptureTask()
+            try? self?.speechRecognizer.startRecognition()
+        }
+    }
+    
     queryClient.onAnswerReceived = { [weak self] answer in
       Task { @MainActor [weak self] in
-        self?.queryStatus = "Response: \(answer)"
+        self?.queryStatus = "Response received"
+        // Update UI state to remove spinner
+        self?.isProcessingQuery = false
+        
+        // Speak fallback only (this will trigger onSpeechEnded when done)
         self?.ttsManager.speak(answer)
-        self?.isQuerying = false
-        // Resume periodic capture if needed
-        self?.startPeriodicCaptureTask()
+      }
+    }
+    
+    queryClient.onAudioReceived = { [weak self] base64Audio in
+      Task { @MainActor [weak self] in
+        // Play audio (interrupts TTS)
+        // Update UI state to remove spinner
+        self?.isProcessingQuery = false
+        
+        self?.ttsManager.playAudioData(base64Audio)
       }
     }
     
     queryClient.onError = { [weak self] error in
       Task { @MainActor [weak self] in
         self?.queryStatus = "Error: \(error.localizedDescription)"
-        self?.ttsManager.speak("Sorry, I encountered an error searching your memory.")
-        self?.isQuerying = false
+        self?.ttsManager.speak("Sorry, something went wrong.")
+        self?.isProcessingQuery = false
+        
+        // Resume immediately on error
         self?.startPeriodicCaptureTask()
+        try? self?.speechRecognizer.startRecognition()
       }
     }
   }
 
+  // Store query image captured at button press
+  private var queryImage: UIImage?
+  
   public func startQueryInput() {
-    // Stop periodic capture so it doesn't interfere
+    NSLog("[StreamSessionViewModel] 🎤 startQueryInput() called - isRecording:\(isRecordingQuery), isProcessing:\(isProcessingQuery)")
+    
+    // If already recording or processing, ignore (prevents double-tap issues)
+    if isRecordingQuery {
+      NSLog("[StreamSessionViewModel] ⚠️ Already recording, ignoring startQueryInput")
+      return
+    }
+    
+    // Stop any playing audio immediately
+    ttsManager.stop()
+    
+    // Stop background context collection
     stopPeriodicCaptureTask()
     
-    // Reset speech recognizer to clear previous ambient noise
+    // Set recording state FIRST so photo listener knows to store the photo
+    isRecordingQuery = true
+    isProcessingQuery = false 
+    queryStatus = "Listening..."
+    queryImage = nil  // Clear any previous query image
+    
+    // Reset text for the new query
     speechRecognizer.resetText()
     
-    isQuerying = true
-    queryStatus = "Listening..."
+    // IMMEDIATELY trigger photo capture - this captures what the user is looking at
+    // The photo listener (BRANCH 0) will store it in queryImage
+    capturePhoto()
+    NSLog("[StreamSessionViewModel] 📸 Photo capture triggered")
     
-    // Play a start sound or haptic? (Optional)
+    // Start listening for speech at the same time
+    try? speechRecognizer.startRecognition()
+    
+    NSLog("[StreamSessionViewModel] ✅ Query input started - capturing photo + listening")
   }
   
   public func finishQueryInput() {
-    guard isQuerying else { return }
+    NSLog("[StreamSessionViewModel] 🎤 finishQueryInput() called - isRecording:\(isRecordingQuery), isProcessing:\(isProcessingQuery)")
+    
+    guard isRecordingQuery else {
+      NSLog("[StreamSessionViewModel] ⚠️ Not recording, ignoring finishQueryInput")
+      return
+    }
+    
+    // 1. Capture the query text FIRST
+    let transcription = speechRecognizer.transcribedText.trimmingCharacters(in: .whitespacesAndNewlines)
+    NSLog("[StreamSessionViewModel] 📝 Captured transcription: '\(transcription)'")
+    
+    // Update recording state immediately
+    isRecordingQuery = false
+    
+    // 2. Check if we actually got any speech
+    if transcription.isEmpty {
+      NSLog("[StreamSessionViewModel] ⚠️ No transcription captured - resetting")
+      queryStatus = "No recording detected"
+      isProcessingQuery = false
+      queryImage = nil
+      
+      // Resume background tasks
+      startPeriodicCaptureTask()
+      try? speechRecognizer.startRecognition()
+      
+      // Clear status after a short delay
+      Task { @MainActor in
+        try? await Task.sleep(nanoseconds: 2 * NSEC_PER_SEC)
+        if self.queryStatus == "No recording detected" {
+          self.queryStatus = ""
+        }
+      }
+      return
+    }
+    
+    // 3. We have transcription - proceed with query
+    isProcessingQuery = true
     queryStatus = "Processing query..."
     
-    // Capture the query text *before* photo capture just in case
-    // We will use this in the photo listener
-    capturedTranscription = speechRecognizer.transcribedText
+    // 4. PAUSE Transcription Service
+    speechRecognizer.stopRecognition()
     
-    // Trigger photo capture. The actual upload logic will happen in the listener
-    // when the photo data arrives.
-    capturePhoto()
+    // 5. Send query directly using the image captured at button press
+    let imageToSend = queryImage
+    queryImage = nil  // Clear for next use
+    
+    Task { @MainActor in
+      do {
+        try await self.queryClient.sendQuery(image: imageToSend, text: transcription)
+        self.uploadStatus = "Query sent!"
+        NSLog("[StreamSessionViewModel] ✅ Query sent successfully")
+      } catch {
+        self.uploadStatus = "Query failed: \(error.localizedDescription)"
+        self.queryStatus = "Query failed"
+        self.ttsManager.speak("Sorry, I couldn't send your question.")
+        self.isProcessingQuery = false
+        self.startPeriodicCaptureTask()
+        try? self.speechRecognizer.startRecognition()
+      }
+    }
   }
 }

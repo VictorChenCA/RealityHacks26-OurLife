@@ -42,10 +42,13 @@ class SpeechRecognizer: ObservableObject {
   }
   
   func startRecognition() throws {
+    NSLog("[SpeechRecognizer] startRecognition() called")
+    
     // Cancel previous task if exists
     stopRecognition()
     
     guard let recognizer = speechRecognizer, recognizer.isAvailable else {
+      NSLog("[SpeechRecognizer] ❌ Recognizer unavailable")
       throw SpeechRecognizerError.recognizerUnavailable
     }
     
@@ -62,6 +65,7 @@ class SpeechRecognizer: ObservableObject {
     // Get audio format from input node
     let inputNode = audioEngine.inputNode
     let recordingFormat = inputNode.inputFormat(forBus: 0)
+    NSLog("[SpeechRecognizer] Audio format: \(recordingFormat)")
     
     // Install tap to feed audio to recognition request
     inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { buffer, _ in
@@ -71,6 +75,7 @@ class SpeechRecognizer: ObservableObject {
     // Start audio engine
     audioEngine.prepare()
     try audioEngine.start()
+    NSLog("[SpeechRecognizer] ✅ Audio engine started")
     
     // Start recognition task
     recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
@@ -81,6 +86,7 @@ class SpeechRecognizer: ObservableObject {
           // Handle errors silently for partial results
           // Error code 203 indicates cancellation, which is expected when stopping recognition
           let errorCode = (error as NSError).code
+          NSLog("[SpeechRecognizer] Recognition error: \(error.localizedDescription) (code: \(errorCode))")
           if errorCode != 203 { // 203 is SFSpeechRecognitionError.cancelled
             self.isRecognizing = false
           }
@@ -111,15 +117,21 @@ class SpeechRecognizer: ObservableObject {
     
     recognitionRequest = request
     isRecognizing = true
+    NSLog("[SpeechRecognizer] ✅ Recognition started successfully")
   }
   
   func stopRecognition() {
+    NSLog("[SpeechRecognizer] stopRecognition() called - isRecognizing: \(isRecognizing)")
+    
     recognitionTask?.cancel()
     recognitionTask = nil
     recognitionRequest?.endAudio()
     recognitionRequest = nil
     
-    audioEngine.stop()
+    if audioEngine.isRunning {
+      audioEngine.stop()
+      NSLog("[SpeechRecognizer] Audio engine stopped")
+    }
     audioEngine.inputNode.removeTap(onBus: 0)
     
     // Don't deactivate audio session - DAT SDK manages it
@@ -129,10 +141,9 @@ class SpeechRecognizer: ObservableObject {
   }
   
   func resetText() {
-    // Save current transcribed text as the reset point
-    // This allows us to show only new text after reset
-    // Note: We use the current transcribedText which contains the full transcription so far
-    lastResetText = transcribedText
+    NSLog("[SpeechRecognizer] resetText() called - clearing transcription")
+    // Clear everything for a fresh start
+    lastResetText = ""
     transcribedText = ""
   }
 }

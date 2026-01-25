@@ -137,6 +137,12 @@ class QueryWebSocketClient: NSObject {
   func sendQuery(image: UIImage?, text: String, includeFaces: Bool = true, maxImages: Int = 8) async throws {
     log("[QueryWebSocketClient] 📤 sendQuery() called - text: '\(text)'")
     
+    // Auto-reconnect if needed
+    if webSocketTask == nil || webSocketTask?.state == .completed || webSocketTask?.state == .canceling {
+        log("[QueryWebSocketClient] ⚠️ WebSocket not connected (state: \(webSocketTask?.state.rawValue ?? -1)), reconnecting...")
+        try connect()
+    }
+    
     guard let webSocketTask = webSocketTask else {
       throw QueryWebSocketError.notConnected
     }
@@ -246,25 +252,21 @@ class QueryWebSocketClient: NSObject {
         if let ok = json["ok"] as? Bool {
           log("[QueryWebSocketClient] 📋 Response ok: \(ok)")
           if ok {
-            // Check for text answer
-            if let answer = json["answer"] as? String {
-              log("[QueryWebSocketClient] ✅ Found answer field! Length: \(answer.count) chars")
+            // PRIORITY: Check for audio FIRST - if present, use audio and skip TTS
+            if let audio = json["audio"] as? String, !audio.isEmpty {
+              log("[QueryWebSocketClient] ✅ Found audio field! Length: \(audio.count) chars")
+              log("[QueryWebSocketClient] 📞 Calling onAudioReceived callback (PRIORITY)...")
+              onAudioReceived?(audio)
+              log("[QueryWebSocketClient] ✅ onAudioReceived callback called - skipping TTS")
+            } else if let answer = json["answer"] as? String {
+              // FALLBACK: Only use TTS if there's no audio
+              log("[QueryWebSocketClient] ✅ Found answer field (no audio)! Length: \(answer.count) chars")
               log("[QueryWebSocketClient] ✅ Answer preview: \(answer.prefix(100))...")
-              log("[QueryWebSocketClient] 📞 Calling onAnswerReceived callback...")
+              log("[QueryWebSocketClient] 📞 Calling onAnswerReceived callback (fallback)...")
               onAnswerReceived?(answer)
               log("[QueryWebSocketClient] ✅ onAnswerReceived callback called")
             } else {
-              log("[QueryWebSocketClient] ⚠️ No 'answer' field in response")
-            }
-            
-            // Check for audio response
-            if let audio = json["audio"] as? String {
-              log("[QueryWebSocketClient] ✅ Found audio field! Length: \(audio.count) chars")
-              log("[QueryWebSocketClient] 📞 Calling onAudioReceived callback...")
-              onAudioReceived?(audio)
-              log("[QueryWebSocketClient] ✅ onAudioReceived callback called")
-            } else {
-              log("[QueryWebSocketClient] ⚠️ No 'audio' field in response")
+              log("[QueryWebSocketClient] ⚠️ No 'answer' or 'audio' field in response")
             }
           } else {
             // Error response

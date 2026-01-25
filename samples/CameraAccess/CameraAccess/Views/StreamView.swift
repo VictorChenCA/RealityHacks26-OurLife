@@ -106,9 +106,8 @@ struct StreamView: View {
         Spacer()
       }
 
-      // Center Query Button
+      // Top Middle Query Button
       VStack {
-        Spacer()
         HStack {
             Spacer()
             // Using DragGesture for reliable TouchDown/TouchUp behavior
@@ -139,15 +138,25 @@ struct StreamView: View {
                         viewModel.finishQueryInput()
                     }
             )
-            .padding(.bottom, 100) // Position above bottom controls
             Spacer()
         }
+        .padding(.top, 120) // Position below TTS controls
+        Spacer()
       }
       
       // Transcription overlay
       VStack {
         Spacer()
-        if !viewModel.speechRecognizer.transcribedText.isEmpty {
+        
+        if viewModel.isProcessingQuery {
+             ProgressView()
+               .progressViewStyle(CircularProgressViewStyle(tint: .white))
+               .scaleEffect(1.5)
+               .padding(12)
+               .background(Color.black.opacity(0.7))
+               .cornerRadius(12)
+               .padding(.bottom, 100)
+        } else if !viewModel.speechRecognizer.transcribedText.isEmpty {
           Text(viewModel.speechRecognizer.transcribedText)
             .font(.system(size: 14))
             .foregroundColor(.white)

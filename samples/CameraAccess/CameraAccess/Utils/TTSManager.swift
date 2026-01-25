@@ -17,9 +17,13 @@ import AVFoundation
 import Foundation
 
 @MainActor
-class TTSManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
+class TTSManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDelegate {
   private let synthesizer = AVSpeechSynthesizer()
+  private var audioPlayer: AVAudioPlayer?
   @Published var isSpeaking: Bool = false
+  
+  // Callback when speech/audio finishes playing naturally
+  var onSpeechEnded: (() -> Void)?
   
   override init() {
     super.init()
@@ -54,9 +58,63 @@ class TTSManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     synthesizer.speak(utterance)
   }
   
-  /// Stop current speech
+  /// Play audio from Base64 string
+  /// - Parameter base64String: The Base64 encoded audio data
+  func playAudioData(_ base64String: String) {
+    NSLog("[TTSManager] 🎵 playAudioData called with \(base64String.count) chars")
+    
+    guard let data = Data(base64Encoded: base64String) else {
+      NSLog("[TTSManager] ❌ Failed to decode Base64 audio string")
+      return
+    }
+    
+    NSLog("[TTSManager] ✅ Decoded \(data.count) bytes of audio data")
+    
+    // Stop any current playback
+    stop()
+    
+    // Reconfigure audio session to ensure clean state
+    do {
+      let audioSession = AVAudioSession.sharedInstance()
+      try audioSession.setCategory(.playAndRecord, options: [.mixWithOthers, .allowBluetooth, .defaultToSpeaker])
+      try audioSession.setActive(true)
+      NSLog("[TTSManager] ✅ Audio session reconfigured")
+    } catch {
+      NSLog("[TTSManager] ⚠️ Audio session reconfigure warning: \(error)")
+    }
+    
+    do {
+      audioPlayer = try AVAudioPlayer(data: data)
+      audioPlayer?.delegate = self
+      audioPlayer?.volume = 1.0
+      audioPlayer?.prepareToPlay()
+      
+      let success = audioPlayer?.play() ?? false
+      isSpeaking = success
+      NSLog("[TTSManager] ▶️ Playing audio data: \(data.count) bytes, success: \(success)")
+      
+      if !success {
+        NSLog("[TTSManager] ❌ play() returned false!")
+      }
+    } catch {
+      NSLog("[TTSManager] ❌ Failed to play audio data: \(error)")
+      // Trigger callback so the app doesn't stay stuck
+      onSpeechEnded?()
+    }
+  }
+  
+  /// Stop current speech or audio
   func stop() {
-    synthesizer.stopSpeaking(at: .immediate)
+    NSLog("[TTSManager] 🛑 stop() called")
+    if synthesizer.isSpeaking {
+        NSLog("[TTSManager] 🛑 Stopping synthesizer...")
+        synthesizer.stopSpeaking(at: .immediate)
+    }
+    if let player = audioPlayer, player.isPlaying {
+        NSLog("[TTSManager] 🛑 Stopping audio player...")
+        player.stop()
+    }
+    isSpeaking = false
   }
   
   // MARK: - AVSpeechSynthesizerDelegate
@@ -69,10 +127,19 @@ class TTSManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
   func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
     isSpeaking = false
     NSLog("[TTSManager] Finished speaking")
+    onSpeechEnded?()
   }
   
   func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
     isSpeaking = false
     NSLog("[TTSManager] Cancelled speaking")
+  }
+  
+  // MARK: - AVAudioPlayerDelegate
+  
+  func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+    isSpeaking = false
+    NSLog("[TTSManager] Checkpoint: Finished playing audio (success: \(flag))")
+    onSpeechEnded?()
   }
 }
