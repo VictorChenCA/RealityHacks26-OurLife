@@ -49,7 +49,8 @@ logger = logging.getLogger("realityhacks-backend")
 # =============================================================================
 
 EST = ZoneInfo("America/New_York")
-GEMINI_MODEL = "gemini-2.0-flash-exp"
+GEMINI_MODEL = "gemini-3.0"
+
 
 def _format_query_timestamp(ts: datetime, now: datetime) -> str:
     """Format timestamp with relative time for session differentiation."""
@@ -66,6 +67,7 @@ def _format_query_timestamp(ts: datetime, now: datetime) -> str:
         days = int(delta.total_seconds() / 86400)
         relative = f"{days}d ago"
     return f"{ts.strftime('%Y-%m-%d %H:%M:%S')} ({relative})"
+
 
 MAX_QUERY_IMAGES = 16
 DEFAULT_QUERY_IMAGES = 8
@@ -317,7 +319,8 @@ def _date_key_from_dt(dt: datetime) -> str:
 @dataclass
 class InMemoryDB:
     captures: Dict[str, Dict[str, Any]] = field(default_factory=dict)
-    processed_memories: Dict[Tuple[str, str], Dict[str, Any]] = field(default_factory=dict)
+    processed_memories: Dict[Tuple[str, str],
+                             Dict[str, Any]] = field(default_factory=dict)
     user_profiles: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     contacts: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     hourly_summaries: Dict[str, Dict[str, Any]] = field(default_factory=dict)
@@ -331,14 +334,17 @@ class FirestoreRepo:
         self._client = None
 
         if firestore is None:
-            logger.warning("google-cloud-firestore not available; using in-memory DB")
+            logger.warning(
+                "google-cloud-firestore not available; using in-memory DB")
             return
 
         try:
             self._client = firestore.AsyncClient(project=self.project_id)
-            logger.info("Firestore client initialized (project=%s)", self.project_id)
+            logger.info("Firestore client initialized (project=%s)",
+                        self.project_id)
         except Exception:
-            logger.exception("Failed to initialize Firestore; using in-memory DB")
+            logger.exception(
+                "Failed to initialize Firestore; using in-memory DB")
             self._client = None
 
     @property
@@ -378,7 +384,8 @@ class FirestoreRepo:
                     d = ts.astimezone(timezone.utc).date()
                 else:
                     try:
-                        d = _parse_iso_datetime(ts).astimezone(timezone.utc).date()
+                        d = _parse_iso_datetime(
+                            ts).astimezone(timezone.utc).date()
                     except Exception:
                         continue
                 if d == day:
@@ -533,15 +540,17 @@ class FirestoreRepo:
         doc_id = f"queries_{user_id}"
         now = datetime.now(timezone.utc)
         query_record["timestamp"] = now
-        
+
         if not self._client:
-            existing = self._mem.processed_memories.get(("recent_queries", user_id), {"queries": []})
+            existing = self._mem.processed_memories.get(
+                ("recent_queries", user_id), {"queries": []})
             existing["queries"].insert(0, query_record)
             existing["queries"] = existing["queries"][:50]  # Keep last 50
             existing["updatedAt"] = now
-            self._mem.processed_memories[("recent_queries", user_id)] = existing
+            self._mem.processed_memories[(
+                "recent_queries", user_id)] = existing
             return
-        
+
         doc_ref = self._client.collection("recent_queries").document(doc_id)
         snap = await doc_ref.get()
         if snap.exists:
@@ -549,10 +558,10 @@ class FirestoreRepo:
             queries = data.get("queries", [])
         else:
             queries = []
-        
+
         queries.insert(0, query_record)
         queries = queries[:50]  # Keep last 50 queries
-        
+
         await doc_ref.set({
             "userId": user_id,
             "queries": queries,
@@ -630,18 +639,19 @@ manager = ConnectionManager()
 
 class TTSService:
     """Google Cloud Text-to-Speech service for generating audio from query responses."""
-    
+
     MAX_TEXT_LENGTH = 5000
-    
+
     def __init__(self):
         self._client = None
         self._voice = None
         self._audio_config = None
-        
+
         if texttospeech is None:
-            logger.warning("google-cloud-texttospeech not available; TTS disabled")
+            logger.warning(
+                "google-cloud-texttospeech not available; TTS disabled")
             return
-        
+
         try:
             self._client = texttospeech.TextToSpeechClient()
             self._voice = texttospeech.VoiceSelectionParams(
@@ -656,30 +666,31 @@ class TTSService:
         except Exception:
             logger.exception("Failed to initialize TTS client")
             self._client = None
-    
+
     @property
     def is_available(self) -> bool:
         return self._client is not None
-    
+
     async def generate_speech(self, text: str, query_id: str, user_id: str) -> Optional[str]:
         """
         Generate speech from text and upload to Cloud Storage.
-        
+
         Returns the public URL of the audio file, or None on failure.
         """
         if not self.is_available:
             logger.debug("TTS not available, skipping audio generation")
             return None
-        
+
         if not text or not text.strip():
             return None
-        
+
         try:
             # Truncate text if too long
             if len(text) > self.MAX_TEXT_LENGTH:
                 text = text[:self.MAX_TEXT_LENGTH]
-                logger.info("TTS text truncated to %d chars for query_id=%s", self.MAX_TEXT_LENGTH, query_id)
-            
+                logger.info("TTS text truncated to %d chars for query_id=%s",
+                            self.MAX_TEXT_LENGTH, query_id)
+
             # Synthesize speech (sync call wrapped in to_thread)
             def _synthesize():
                 synthesis_input = texttospeech.SynthesisInput(text=text)
@@ -689,38 +700,44 @@ class TTSService:
                     audio_config=self._audio_config
                 )
                 return response.audio_content
-            
+
             audio_content = await asyncio.to_thread(_synthesize)
-            
+
             if not audio_content:
-                logger.warning("TTS returned empty audio for query_id=%s", query_id)
+                logger.warning(
+                    "TTS returned empty audio for query_id=%s", query_id)
                 return None
-            
+
             # Upload to Cloud Storage
             if storage is None:
-                logger.warning("Storage not available, cannot upload TTS audio")
+                logger.warning(
+                    "Storage not available, cannot upload TTS audio")
                 return None
-            
+
             bucket_name = PROCESSED_MEDIA_BUCKET
             object_name = f"query-responses/{user_id}/{query_id}/response.mp3"
-            
+
             def _upload():
                 import io
-                client = storage.Client(project=os.environ.get("GCP_PROJECT_ID"))
+                client = storage.Client(
+                    project=os.environ.get("GCP_PROJECT_ID"))
                 bucket = client.bucket(bucket_name)
                 blob = bucket.blob(object_name)
                 # Use BytesIO to avoid any ACL operations with uniform bucket access
                 audio_file = io.BytesIO(audio_content)
-                blob.upload_from_file(audio_file, content_type="audio/mpeg", rewind=True)
+                blob.upload_from_file(
+                    audio_file, content_type="audio/mpeg", rewind=True)
                 return f"https://storage.googleapis.com/{bucket_name}/{object_name}"
-            
+
             public_url = await asyncio.to_thread(_upload)
-            
-            logger.info("TTS audio uploaded: query_id=%s url=%s", query_id, public_url)
+
+            logger.info("TTS audio uploaded: query_id=%s url=%s",
+                        query_id, public_url)
             return public_url
-            
+
         except Exception as e:
-            logger.exception("TTS generation failed for query_id=%s: %s", query_id, e)
+            logger.exception(
+                "TTS generation failed for query_id=%s: %s", query_id, e)
             return None
 
 
@@ -831,7 +848,8 @@ async def upload_query_image(query_id: str, file: UploadFile = File(...)) -> Dic
         await asyncio.to_thread(_upload)
 
         url = f"https://storage.googleapis.com/{bucket_name}/{object_name}"
-        logger.info("[QUERY_DATA] Uploaded query image query_id=%s url=%s", query_id, url)
+        logger.info(
+            "[QUERY_DATA] Uploaded query image query_id=%s url=%s", query_id, url)
         return {"status": "success", "url": url, "queryId": query_id}
     except Exception as e:
         logger.exception("Query image upload failed query_id=%s", query_id)
@@ -849,7 +867,8 @@ async def get_memories_for_date(user_id: str, date: str) -> Dict[str, Any]:
             return {"status": "not_found", "message": "No memories for this date"}
         return {"status": "success", "data": doc}
     except Exception as e:
-        logger.exception("Failed to fetch processed memories user=%s date=%s", user_id, date)
+        logger.exception(
+            "Failed to fetch processed memories user=%s date=%s", user_id, date)
         return {"status": "error", "error": str(e)}
 
 
@@ -871,10 +890,10 @@ async def init_user(user_id: str, request: UserInitRequest) -> Dict[str, Any]:
                 "message": "User profile already exists",
                 "profile": existing
             }
-        
+
         prompt = USER_INIT_PROMPT.format(user_info=request.summary)
         parsed = await _call_gemini_text(prompt)
-        
+
         profile_doc = {
             "name": parsed.get("name", ""),
             "occupation": parsed.get("occupation", ""),
@@ -890,7 +909,7 @@ async def init_user(user_id: str, request: UserInitRequest) -> Dict[str, Any]:
             "createdAt": datetime.now(timezone.utc),
         }
         await repo.upsert_user_profile(user_id, profile_doc)
-        
+
         initial_contacts = parsed.get("initialContacts", [])
         if initial_contacts:
             now_iso = datetime.now(timezone.utc).isoformat()
@@ -908,7 +927,7 @@ async def init_user(user_id: str, request: UserInitRequest) -> Dict[str, Any]:
             await repo.upsert_contacts(user_id, {"contacts": contacts_list})
         else:
             await repo.upsert_contacts(user_id, {"contacts": []})
-        
+
         logger.info("Initialized user profile for user_id=%s", user_id)
         return {
             "status": "success",
@@ -950,13 +969,25 @@ async def get_user_contacts(user_id: str) -> Dict[str, Any]:
 # =============================================================================
 
 def _get_gemini_model():
+    """Configure the genai SDK and return the configured model identifier or
+    raise a helpful error if configuration is missing.
+
+    Note: newer versions of the `google.generativeai` SDK expose different
+    idioms for calling models. Callers should use the returned model name and
+    an adapter-based call helper implemented below.
+    """
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY not set")
     if genai is None:
         raise RuntimeError("google-generativeai not installed")
-    genai.configure(api_key=api_key)
-    return genai.GenerativeModel(GEMINI_MODEL)
+    # Ensure SDK is configured (safe to call repeatedly)
+    try:
+        genai.configure(api_key=api_key)
+    except Exception:
+        # Older/newer SDKs may raise on configure; ignore and let adapter handle it
+        pass
+    return GEMINI_MODEL
 
 
 def _parse_json_response(text: str) -> Dict[str, Any]:
@@ -982,17 +1013,19 @@ async def _download_image_as_base64(url: str) -> Optional[str]:
         if url.startswith(gcs_prefix):
             # Use authenticated GCS SDK for private bucket
             if storage is None:
-                logger.error("google-cloud-storage not installed, cannot download from private bucket")
+                logger.error(
+                    "google-cloud-storage not installed, cannot download from private bucket")
                 return None
-            
+
             object_name = url[len(gcs_prefix):]
-            
+
             def _download_blob() -> bytes:
-                client = storage.Client(project=os.environ.get("GCP_PROJECT_ID"))
+                client = storage.Client(
+                    project=os.environ.get("GCP_PROJECT_ID"))
                 bucket = client.bucket(RAW_MEDIA_BUCKET)
                 blob = bucket.blob(object_name)
                 return blob.download_as_bytes()
-            
+
             content = await asyncio.to_thread(_download_blob)
             return base64.b64encode(content).decode("utf-8")
         else:
@@ -1007,27 +1040,114 @@ async def _download_image_as_base64(url: str) -> Optional[str]:
 
 
 async def _call_gemini_with_image(prompt: str, image_base64: Optional[str] = None) -> Dict[str, Any]:
-    def _call():
-        model = _get_gemini_model()
-        if image_base64:
-            image_part = {"mime_type": "image/jpeg", "data": image_base64}
-            response = model.generate_content([prompt, image_part])
-        else:
-            response = model.generate_content(prompt)
-        return response.text
-    
-    text = await asyncio.to_thread(_call)
+    # Reuse the unified adapter which attempts to call either the old
+    # `GenerativeModel` API or the newer `genai.models.generate` / `genai.generate`
+    text = await _call_gemini_raw(prompt, image_base64)
     return _parse_json_response(text)
 
 
 async def _call_gemini_text(prompt: str) -> Dict[str, Any]:
-    def _call():
-        model = _get_gemini_model()
-        response = model.generate_content(prompt)
-        return response.text
-    
-    text = await asyncio.to_thread(_call)
+    text = await _call_gemini_raw(prompt, None)
     return _parse_json_response(text)
+
+
+async def _call_gemini_raw(prompt: str, image_base64: Optional[str] = None) -> str:
+    """Call the installed `google.generativeai` SDK using a best-effort
+    adapter that supports both older and newer SDK call patterns.
+
+    Returns the raw text response (not JSON-parsed). The caller will parse
+    JSON as needed.
+    """
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY not set")
+    if genai is None:
+        raise RuntimeError("google-generativeai not installed")
+
+    def _call():
+        # Ensure SDK configured
+        try:
+            genai.configure(api_key=api_key)
+        except Exception:
+            pass
+
+        # 1) Old style: genai.GenerativeModel(...).generate_content(...)
+        if hasattr(genai, "GenerativeModel"):
+            try:
+                model_obj = genai.GenerativeModel(GEMINI_MODEL)
+                if image_base64:
+                    image_part = {"mime_type": "image/jpeg",
+                                  "data": image_base64}
+                    resp = model_obj.generate_content([prompt, image_part])
+                else:
+                    resp = model_obj.generate_content(prompt)
+                text = getattr(resp, "text", None)
+                return text if text is not None else str(resp)
+            except Exception:
+                # Fall through to other adapters
+                pass
+
+        # 2) Newer SDK: genai.models.generate(...)
+        models_mod = getattr(genai, "models", None)
+        if models_mod and hasattr(models_mod, "generate"):
+            try:
+                if image_base64:
+                    # Compose multimodal input as a list of parts when supported
+                    inputs = [{"content": prompt}, {
+                        "image": {"mime_type": "image/jpeg", "data": image_base64}}]
+                else:
+                    inputs = {"content": prompt}
+
+                resp = models_mod.generate(model=GEMINI_MODEL, input=inputs)
+                # Try common response accessors
+                #  - resp.output_text
+                #  - resp.output (list)
+                ot = getattr(resp, "output_text", None)
+                if ot:
+                    return ot
+
+                out = getattr(resp, "output", None)
+                if out:
+                    try:
+                        first = out[0]
+                        if isinstance(first, dict):
+                            # content may be list of blocks
+                            content = first.get("content")
+                            if isinstance(content, list):
+                                for item in content:
+                                    if isinstance(item, dict) and "text" in item:
+                                        return item["text"]
+                            # fallback to joining text-like fields
+                            text_fields = []
+                            for v in (first.get("content") or []):
+                                if isinstance(v, dict) and v.get("text"):
+                                    text_fields.append(v.get("text"))
+                            if text_fields:
+                                return "\n".join(text_fields)
+                    except Exception:
+                        pass
+
+                # Last resort
+                return str(resp)
+            except Exception:
+                pass
+
+        # 3) Another possible shape: genai.generate(...)
+        if hasattr(genai, "generate"):
+            try:
+                if image_base64:
+                    resp = genai.generate(model=GEMINI_MODEL, prompt=[
+                                          prompt, {"image": image_base64}])
+                else:
+                    resp = genai.generate(model=GEMINI_MODEL, prompt=prompt)
+                text = getattr(resp, "text", None) or getattr(
+                    resp, "output_text", None)
+                return text if text is not None else str(resp)
+            except Exception:
+                pass
+
+        raise RuntimeError(
+            "Unsupported google.generativeai SDK API shape; please ensure the SDK is up-to-date")
 
 
 # =============================================================================
@@ -1040,19 +1160,20 @@ async def _analyze_capture_with_gemini(capture: Dict[str, Any]) -> Dict[str, Any
         ts_str = ts.isoformat()
     else:
         ts_str = str(ts)
-    
-    transcription = capture.get("transcription") or "No transcription available"
+
+    transcription = capture.get(
+        "transcription") or "No transcription available"
     photo_url = capture.get("photoURL")
-    
+
     prompt = CAPTURE_ANALYSIS_PROMPT.format(
         timestamp=ts_str,
         transcription=transcription
     )
-    
+
     image_b64 = None
     if photo_url:
         image_b64 = await _download_image_as_base64(photo_url)
-    
+
     try:
         analysis = await _call_gemini_with_image(prompt, image_b64)
         return analysis
@@ -1077,23 +1198,24 @@ async def _analyze_capture_with_gemini(capture: Dict[str, Any]) -> Dict[str, Any
 async def _update_contacts_from_analysis(user_id: str, analysis: Dict[str, Any], capture: Dict[str, Any]) -> None:
     mentioned_names = analysis.get("mentionedNames") or []
     detected_faces = analysis.get("detectedFaces") or []
-    
+
     if not mentioned_names and not detected_faces:
         return
-    
+
     contacts_doc = await repo.get_contacts(user_id)
     if not contacts_doc:
         contacts_doc = {"contacts": []}
-    
+
     contacts_list = contacts_doc.get("contacts", [])
     contacts_by_name = {c.get("name", "").lower(): c for c in contacts_list}
     now_iso = datetime.now(timezone.utc).isoformat()
-    
+
     for name in mentioned_names:
         name_lower = name.lower()
         if name_lower in contacts_by_name:
             contacts_by_name[name_lower]["lastSeen"] = now_iso
-            contacts_by_name[name_lower]["mentionCount"] = contacts_by_name[name_lower].get("mentionCount", 0) + 1
+            contacts_by_name[name_lower]["mentionCount"] = contacts_by_name[name_lower].get(
+                "mentionCount", 0) + 1
         else:
             new_contact = {
                 "name": name,
@@ -1106,7 +1228,7 @@ async def _update_contacts_from_analysis(user_id: str, analysis: Dict[str, Any],
             }
             contacts_list.append(new_contact)
             contacts_by_name[name_lower] = new_contact
-    
+
     for face in detected_faces:
         face_name = face.get("possibleName")
         if face_name:
@@ -1116,10 +1238,11 @@ async def _update_contacts_from_analysis(user_id: str, analysis: Dict[str, Any],
                 if not contact.get("bestFacePhotoURL") and capture.get("photoURL"):
                     contact["bestFacePhotoURL"] = capture.get("photoURL")
                 contact["lastSeen"] = now_iso
-    
+
     contacts_doc["contacts"] = list(contacts_by_name.values())
     await repo.upsert_contacts(user_id, contacts_doc)
-    logger.info("Updated contacts for user=%s, total=%d", user_id, len(contacts_doc["contacts"]))
+    logger.info("Updated contacts for user=%s, total=%d",
+                user_id, len(contacts_doc["contacts"]))
 
 
 # =============================================================================
@@ -1130,7 +1253,7 @@ async def _check_and_run_hourly_condensation(user_id: str, capture_ts: datetime)
     profile = await repo.get_user_profile(user_id)
     if not profile:
         return
-    
+
     last_condensation = profile.get("lastCondensationTime")
     if last_condensation:
         if isinstance(last_condensation, str):
@@ -1138,20 +1261,21 @@ async def _check_and_run_hourly_condensation(user_id: str, capture_ts: datetime)
         time_since = capture_ts - last_condensation
         if time_since < timedelta(hours=1):
             return
-    
+
     now_est = capture_ts.astimezone(EST)
-    hour_start = now_est.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
+    hour_start = now_est.replace(
+        minute=0, second=0, microsecond=0) - timedelta(hours=1)
     hour_end = hour_start + timedelta(hours=1) - timedelta(seconds=1)
-    
+
     hour_start_utc = hour_start.astimezone(timezone.utc)
     hour_end_utc = hour_end.astimezone(timezone.utc)
-    
+
     captures = await repo.list_captures_in_range(user_id, hour_start_utc, hour_end_utc)
-    
+
     if not captures:
         await repo.upsert_user_profile(user_id, {"lastCondensationTime": capture_ts})
         return
-    
+
     captures_for_prompt = []
     for c in captures:
         ts = c.get("timestamp")
@@ -1162,7 +1286,7 @@ async def _check_and_run_hourly_condensation(user_id: str, capture_ts: datetime)
             "transcription": c.get("transcription"),
             "analysis": c.get("geminiAnalysis", {})
         })
-    
+
     # Fetch queries made during this hour
     queries_for_prompt = []
     recent_queries_doc = await repo.get_recent_queries(user_id)
@@ -1176,17 +1300,18 @@ async def _check_and_run_hourly_condensation(user_id: str, capture_ts: datetime)
                         "query": q.get("query"),
                         "answer": q.get("answer", "")[:300]
                     })
-    
+
     try:
         prompt = HOURLY_SUMMARY_PROMPT.format(
             captures_json=json.dumps(captures_for_prompt, indent=2),
-            queries_json=json.dumps(queries_for_prompt, indent=2) if queries_for_prompt else "No queries this hour"
+            queries_json=json.dumps(
+                queries_for_prompt, indent=2) if queries_for_prompt else "No queries this hour"
         )
         summary_result = await _call_gemini_text(prompt)
-        
+
         date_str = hour_start.date().isoformat()
         hour_num = hour_start.hour
-        
+
         await repo.create_hourly_summary(user_id, date_str, hour_num, {
             "summary": summary_result.get("summary", ""),
             "themes": summary_result.get("themes", []),
@@ -1199,14 +1324,15 @@ async def _check_and_run_hourly_condensation(user_id: str, capture_ts: datetime)
             "captureIds": [c.get("id") for c in captures],
             "captureCount": len(captures)
         })
-        
+
         await repo.upsert_user_profile(user_id, {
             "lastCondensationTime": capture_ts,
             "lastHourSummaryTime": capture_ts.isoformat(),
             "lastHourSummary": summary_result.get("summary", "")
         })
-        
-        logger.info("Created hourly summary for user=%s date=%s hour=%d", user_id, date_str, hour_num)
+
+        logger.info("Created hourly summary for user=%s date=%s hour=%d",
+                    user_id, date_str, hour_num)
     except Exception:
         logger.exception("Hourly condensation failed for user=%s", user_id)
         await repo.upsert_user_profile(user_id, {"lastCondensationTime": capture_ts})
@@ -1220,19 +1346,19 @@ async def _check_and_run_daily_condensation(user_id: str, capture_ts: datetime) 
     now_est = capture_ts.astimezone(EST)
     yesterday_est = (now_est - timedelta(days=1)).date()
     yesterday_str = yesterday_est.isoformat()
-    
+
     existing = await repo.get_daily_summary(user_id, yesterday_str)
     if existing:
         return
-    
+
     if now_est.hour < 1:
         return
-    
+
     hourly_summaries = await repo.list_hourly_summaries_for_date(user_id, yesterday_str)
-    
+
     if not hourly_summaries:
         return
-    
+
     try:
         hourly_for_prompt = []
         for h in hourly_summaries:
@@ -1247,10 +1373,11 @@ async def _check_and_run_daily_condensation(user_id: str, capture_ts: datetime) 
                 "mood": h.get("mood"),
                 "captureCount": h.get("captureCount", 0)
             })
-        
-        prompt = DAILY_SUMMARY_PROMPT.format(hourly_json=json.dumps(hourly_for_prompt, indent=2))
+
+        prompt = DAILY_SUMMARY_PROMPT.format(
+            hourly_json=json.dumps(hourly_for_prompt, indent=2))
         daily_result = await _call_gemini_text(prompt)
-        
+
         await repo.create_daily_summary(user_id, yesterday_str, {
             "summary": daily_result.get("summary", ""),
             "timeline": daily_result.get("timeline", []),
@@ -1266,13 +1393,14 @@ async def _check_and_run_daily_condensation(user_id: str, capture_ts: datetime) 
             "hourlyIds": [f"hourly_{user_id}_{yesterday_str}_{h.get('hour', 0):02d}" for h in hourly_summaries],
             "totalCaptures": sum(h.get("captureCount", 0) for h in hourly_summaries)
         })
-        
+
         await repo.upsert_user_profile(user_id, {
             "lastDaySummaryDate": yesterday_str,
             "lastDaySummary": daily_result.get("summary", "")
         })
-        
-        logger.info("Created daily summary for user=%s date=%s", user_id, yesterday_str)
+
+        logger.info("Created daily summary for user=%s date=%s",
+                    user_id, yesterday_str)
     except Exception:
         logger.exception("Daily condensation failed for user=%s", user_id)
 
@@ -1287,29 +1415,30 @@ async def _process_capture_async(user_id: str, capture_id: str, capture_ts: date
         if not capture_doc:
             logger.error("Capture not found: %s", capture_id)
             return
-        
+
         analysis = await _analyze_capture_with_gemini(capture_doc)
-        
+
         await repo.update_capture(capture_id, {
             "processed": True,
             "geminiAnalysis": analysis,
         })
-        
+
         await _update_contacts_from_analysis(user_id, analysis, capture_doc)
-        
+
         await _check_and_run_hourly_condensation(user_id, capture_ts)
         await _check_and_run_daily_condensation(user_id, capture_ts)
-        
+
         day_key = _date_key_from_dt(capture_ts)
         await manager.broadcast_unity(user_id, {
             "type": "memory_processed",
             "date": day_key,
             "captureId": capture_id,
         })
-        
+
         logger.info("Processed capture=%s user=%s", capture_id, user_id)
     except Exception:
-        logger.exception("Processing failed for capture=%s user=%s", capture_id, user_id)
+        logger.exception(
+            "Processing failed for capture=%s user=%s", capture_id, user_id)
         try:
             await repo.update_capture(capture_id, {
                 "processed": False,
@@ -1328,7 +1457,8 @@ async def ws_ios(websocket: WebSocket, user_id: str) -> None:
             try:
                 msg = json.loads(raw)
             except json.JSONDecodeError:
-                logger.warning("[SEND_DATA] user=%s INVALID_JSON raw=%s", user_id, raw[:500])
+                logger.warning(
+                    "[SEND_DATA] user=%s INVALID_JSON raw=%s", user_id, raw[:500])
                 await manager.send_json(websocket, {"ok": False, "error": "invalid_json"})
                 continue
 
@@ -1338,7 +1468,7 @@ async def ws_ios(websocket: WebSocket, user_id: str) -> None:
                 transcription = msg.get("transcription") or ""
                 photo_url = msg.get("photoURL") or ""
                 audio_url = msg.get("audioURL") or ""
-                
+
                 logger.info(
                     "[SEND_DATA] user=%s type=%s keys=%s transcription_len=%d photo=%s audio=%s",
                     user_id,
@@ -1348,13 +1478,15 @@ async def ws_ios(websocket: WebSocket, user_id: str) -> None:
                     "yes" if photo_url else "no",
                     "yes" if audio_url else "no"
                 )
-                
+
                 # Log transcription content if present
                 if transcription:
-                    logger.info("[SEND_DATA] user=%s transcription_preview=%s", user_id, transcription[:300])
+                    logger.info(
+                        "[SEND_DATA] user=%s transcription_preview=%s", user_id, transcription[:300])
                 else:
-                    logger.warning("[SEND_DATA] user=%s NO_TRANSCRIPTION in message", user_id)
-                
+                    logger.warning(
+                        "[SEND_DATA] user=%s NO_TRANSCRIPTION in message", user_id)
+
                 if msg.get("type") != "memory_capture":
                     await manager.send_json(
                         websocket,
@@ -1382,7 +1514,8 @@ async def ws_ios(websocket: WebSocket, user_id: str) -> None:
 
                 await repo.create_capture(doc)
 
-                ack_ts = ts.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+                ack_ts = ts.astimezone(
+                    timezone.utc).isoformat().replace("+00:00", "Z")
                 await manager.send_json(
                     websocket,
                     {
@@ -1394,10 +1527,12 @@ async def ws_ios(websocket: WebSocket, user_id: str) -> None:
                 )
 
                 # Non-blocking processing
-                asyncio.create_task(_process_capture_async(user_id, capture_id, ts))
+                asyncio.create_task(
+                    _process_capture_async(user_id, capture_id, ts))
 
             except Exception as e:
-                logger.exception("Failed to handle iOS message user=%s", user_id)
+                logger.exception(
+                    "Failed to handle iOS message user=%s", user_id)
                 await manager.send_json(
                     websocket,
                     {
@@ -1419,7 +1554,8 @@ def _serialize_capture(doc: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(doc)
     ts = out.get("timestamp")
     if isinstance(ts, datetime):
-        out["timestamp"] = ts.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        out["timestamp"] = ts.astimezone(
+            timezone.utc).isoformat().replace("+00:00", "Z")
     return out
 
 
@@ -1431,11 +1567,13 @@ async def _process_unity_query(user_id: str, query_text: str, date_range: Option
     profile = await repo.get_user_profile(user_id)
     contacts_doc = await repo.get_contacts(user_id)
     recent_queries_doc = await repo.get_recent_queries(user_id)
-    
-    profile_str = json.dumps(profile, default=str) if profile else "No profile available"
+
+    profile_str = json.dumps(
+        profile, default=str) if profile else "No profile available"
     contacts_list = contacts_doc.get("contacts", []) if contacts_doc else []
-    contacts_summary = ", ".join([f"{c.get('name')} ({c.get('relationship')})" for c in contacts_list[:20]]) or "No contacts"
-    
+    contacts_summary = ", ".join(
+        [f"{c.get('name')} ({c.get('relationship')})" for c in contacts_list[:20]]) or "No contacts"
+
     # Format recent queries for conversation context with formatted timestamps
     now = datetime.now(timezone.utc)
     recent_queries_list = []
@@ -1451,15 +1589,18 @@ async def _process_unity_query(user_id: str, query_text: str, date_range: Option
                 "answer": q.get("answer", "")[:200],
                 "timestamp": formatted_ts
             })
-    recent_queries_str = json.dumps(recent_queries_list, default=str, indent=2) if recent_queries_list else "No recent queries"
-    
-    last_hour = profile.get("lastHourSummary", "No recent hourly summary") if profile else "No data"
-    last_day = profile.get("lastDaySummary", "No recent daily summary") if profile else "No data"
-    
+    recent_queries_str = json.dumps(
+        recent_queries_list, default=str, indent=2) if recent_queries_list else "No recent queries"
+
+    last_hour = profile.get(
+        "lastHourSummary", "No recent hourly summary") if profile else "No data"
+    last_day = profile.get(
+        "lastDaySummary", "No recent daily summary") if profile else "No data"
+
     date_range_str = "Not specified"
     if date_range:
         date_range_str = f"{date_range.get('start', 'any')} to {date_range.get('end', 'any')}"
-    
+
     router_prompt = QUERY_ROUTER_PROMPT.format(
         user_profile=profile_str,
         contacts_summary=contacts_summary,
@@ -1469,13 +1610,13 @@ async def _process_unity_query(user_id: str, query_text: str, date_range: Option
         query_text=query_text,
         date_range=date_range_str
     )
-    
+
     try:
         router_result = await _call_gemini_text(router_prompt)
     except Exception as e:
         logger.exception("Query router failed")
         return {"ok": False, "error": "query_routing_failed", "detail": str(e)}
-    
+
     if router_result.get("needsClarification"):
         # Return clarification as a regular response - user can follow up with new query
         # Recent queries context will maintain conversation continuity
@@ -1488,7 +1629,7 @@ async def _process_unity_query(user_id: str, query_text: str, date_range: Option
             "relatedContacts": [],
             "attachedImages": []
         }
-    
+
     # Check if router needs more query context
     more_context = router_result.get("needsMoreQueryContext", 0)
     if more_context and more_context > 5 and recent_queries_doc:
@@ -1505,17 +1646,20 @@ async def _process_unity_query(user_id: str, query_text: str, date_range: Option
                 "answer": q.get("answer", "")[:200],
                 "timestamp": formatted_ts
             })
-        recent_queries_str = json.dumps(recent_queries_list, default=str, indent=2)
-        logger.info("[QUERY_DATA] Extended query context to %d queries", len(recent_queries_list))
-    
+        recent_queries_str = json.dumps(
+            recent_queries_list, default=str, indent=2)
+        logger.info("[QUERY_DATA] Extended query context to %d queries", len(
+            recent_queries_list))
+
     memory_context = []
-    
+
     data_needed = router_result.get("dataNeeded", {})
     specific_dates = data_needed.get("specificDates", [])
-    
+
     if date_range:
         try:
-            start_date = datetime.fromisoformat(date_range.get("start", "")).date()
+            start_date = datetime.fromisoformat(
+                date_range.get("start", "")).date()
             end_date = datetime.fromisoformat(date_range.get("end", "")).date()
             current = start_date
             while current <= end_date:
@@ -1523,25 +1667,28 @@ async def _process_unity_query(user_id: str, query_text: str, date_range: Option
                 current += timedelta(days=1)
         except Exception:
             pass
-    
+
     if not specific_dates:
         today = datetime.now(EST).date()
-        specific_dates = [today.isoformat(), (today - timedelta(days=1)).isoformat()]
-    
+        specific_dates = [
+            today.isoformat(), (today - timedelta(days=1)).isoformat()]
+
     specific_dates = list(set(specific_dates))[:7]
-    
+
     if data_needed.get("dailySummaries"):
         for date_str in specific_dates:
             summary = await repo.get_daily_summary(user_id, date_str)
             if summary:
-                memory_context.append({"type": "daily_summary", "date": date_str, "data": summary})
-    
+                memory_context.append(
+                    {"type": "daily_summary", "date": date_str, "data": summary})
+
     if data_needed.get("hourlySummaries"):
         for date_str in specific_dates:
             hourly = await repo.list_hourly_summaries_for_date(user_id, date_str)
             for h in hourly:
-                memory_context.append({"type": "hourly_summary", "date": date_str, "hour": h.get("hour"), "data": h})
-    
+                memory_context.append(
+                    {"type": "hourly_summary", "date": date_str, "hour": h.get("hour"), "data": h})
+
     if data_needed.get("captures"):
         for date_str in specific_dates:
             try:
@@ -1568,11 +1715,11 @@ async def _process_unity_query(user_id: str, query_text: str, date_range: Option
                         })
             except Exception:
                 pass
-    
+
     relevant_contacts = router_result.get("relevantContacts", [])
     contacts_info = []
     attached_images = []
-    
+
     if include_faces and router_result.get("needsFaceImages"):
         for contact_name in relevant_contacts[:max_images]:
             for c in contacts_list:
@@ -1581,9 +1728,9 @@ async def _process_unity_query(user_id: str, query_text: str, date_range: Option
                     if c.get("bestFacePhotoURL"):
                         attached_images.append(c.get("bestFacePhotoURL"))
                     break
-    
+
     attached_images = attached_images[:max_images]
-    
+
     answer_prompt = QUERY_ANSWER_PROMPT.format(
         user_profile=profile_str,
         recent_queries=recent_queries_str,
@@ -1592,18 +1739,19 @@ async def _process_unity_query(user_id: str, query_text: str, date_range: Option
         current_time=now.strftime("%Y-%m-%d %H:%M:%S UTC"),
         query_text=query_text
     )
-    
+
     try:
         # Use vision model if user provided an image with their query
         if user_image:
-            logger.info("[QUERY_DATA] Processing query with user-provided image")
+            logger.info(
+                "[QUERY_DATA] Processing query with user-provided image")
             answer_result = await _call_gemini_with_image(answer_prompt, user_image)
         else:
             answer_result = await _call_gemini_text(answer_prompt)
     except Exception as e:
         logger.exception("Query answer generation failed")
         return {"ok": False, "error": "answer_generation_failed", "detail": str(e)}
-    
+
     source_ids = answer_result.get("sourceCaptureIds", [])
     sources = []
     for sid in source_ids[:5]:
@@ -1615,7 +1763,7 @@ async def _process_unity_query(user_id: str, query_text: str, date_range: Option
                     "summary": mc.get("analysis", {}).get("keyMoment", "")
                 })
                 break
-    
+
     return {
         "type": "response",
         "ok": True,
@@ -1650,7 +1798,7 @@ async def _process_unity_query(user_id: str, query_text: str, date_range: Option
 async def ws_query(websocket: WebSocket, user_id: str) -> None:
     await manager.connect("unity", user_id, websocket)
     logger.info("Query WebSocket connected user=%s", user_id)
-    
+
     try:
         while True:
             raw = await websocket.receive_text()
@@ -1659,26 +1807,28 @@ async def ws_query(websocket: WebSocket, user_id: str) -> None:
             except json.JSONDecodeError:
                 await manager.send_json(websocket, {"type": "error", "ok": False, "error": "invalid_json"})
                 continue
-            
+
             query_text = req.get("text", "")
             if not query_text:
                 await manager.send_json(websocket, {"type": "error", "ok": False, "error": "missing_text"})
                 continue
-            
+
             try:
                 date_range = req.get("dateRange")
                 include_faces = req.get("includeFaces", True)
-                max_images = min(req.get("maxImages", DEFAULT_QUERY_IMAGES), MAX_QUERY_IMAGES)
-                image_url = req.get("imageURL")  # Optional: URL from POST /query-upload
-                
+                max_images = min(
+                    req.get("maxImages", DEFAULT_QUERY_IMAGES), MAX_QUERY_IMAGES)
+                # Optional: URL from POST /query-upload
+                image_url = req.get("imageURL")
+
                 # Generate unique query ID
                 query_id = str(uuid.uuid4())[:8]
-                
+
                 # Download image if URL provided
                 user_image = None
                 if image_url:
                     user_image = await _download_image_as_base64(image_url)
-                
+
                 # Log incoming query content
                 logger.info(
                     "[QUERY_DATA] user=%s query_id=%s query=%s dateRange=%s includeFaces=%s imageURL=%s",
@@ -1689,14 +1839,14 @@ async def ws_query(websocket: WebSocket, user_id: str) -> None:
                     include_faces,
                     image_url[:80] if image_url else "none"
                 )
-                
+
                 start_time = time.time()
                 result = await _process_unity_query(user_id, query_text, date_range, include_faces, max_images, user_image)
                 elapsed_ms = (time.time() - start_time) * 1000
-                
+
                 # Add queryId to result
                 result["queryId"] = query_id
-                
+
                 # Generate TTS audio for successful responses (non-blocking on failure)
                 audio_url = None
                 if result.get("ok") and result.get("answer"):
@@ -1707,11 +1857,12 @@ async def ws_query(websocket: WebSocket, user_id: str) -> None:
                             user_id
                         )
                     except Exception as tts_err:
-                        logger.warning("TTS failed for query_id=%s: %s", query_id, tts_err)
-                
+                        logger.warning(
+                            "TTS failed for query_id=%s: %s", query_id, tts_err)
+
                 # Add audioURL to result (null if TTS failed or unavailable)
                 result["audioURL"] = audio_url
-                
+
                 # Log response summary
                 logger.info(
                     "[QUERY_DATA] user=%s query_id=%s response_ok=%s confidence=%s elapsed_ms=%.0f audioURL=%s answer_preview=%s",
@@ -1723,7 +1874,7 @@ async def ws_query(websocket: WebSocket, user_id: str) -> None:
                     "yes" if audio_url else "no",
                     (result.get("answer") or "")[:150]
                 )
-                
+
                 # Save query to recent queries
                 await repo.add_recent_query(user_id, {
                     "query": query_text,
@@ -1731,15 +1882,16 @@ async def ws_query(websocket: WebSocket, user_id: str) -> None:
                     "imageURL": image_url,
                     "dateRange": date_range,
                     "responseType": result.get("type"),
-                    "answer": result.get("answer", "")[:500],  # Truncate for storage
+                    # Truncate for storage
+                    "answer": result.get("answer", "")[:500],
                     "audioURL": audio_url,
                     "confidence": result.get("confidence"),
                     "elapsed_ms": round(elapsed_ms),
                     "ok": result.get("ok", False)
                 })
-                
+
                 await manager.send_json(websocket, result)
-                
+
             except Exception as e:
                 logger.exception("Query failed user=%s", user_id)
                 await manager.send_json(websocket, {
@@ -1748,7 +1900,7 @@ async def ws_query(websocket: WebSocket, user_id: str) -> None:
                     "error": "query_failed",
                     "detail": str(e)
                 })
-    
+
     except WebSocketDisconnect:
         logger.info("Query WebSocket disconnected user=%s", user_id)
     except Exception:
@@ -1774,7 +1926,7 @@ async def ws_unity(websocket: WebSocket, user_id: str) -> None:
                 continue
 
             rtype = req.get("type")
-            
+
             if rtype == "fetch_daily_memories":
                 try:
                     date_str = req.get("date")
@@ -1784,7 +1936,7 @@ async def ws_unity(websocket: WebSocket, user_id: str) -> None:
                     date_key = day.isoformat()
 
                     captures = await repo.list_captures_for_date(user_id, day)
-                    
+
                     daily = await repo.get_daily_summary(user_id, date_key)
                     if daily:
                         summary = daily.get("summary", "")
@@ -1812,7 +1964,8 @@ async def ws_unity(websocket: WebSocket, user_id: str) -> None:
                         "totalCaptures": len(captures),
                     })
                 except Exception as e:
-                    logger.exception("Unity fetch_daily_memories failed user=%s", user_id)
+                    logger.exception(
+                        "Unity fetch_daily_memories failed user=%s", user_id)
                     await manager.send_json(websocket, {
                         "ok": False,
                         "type": "daily_memories",
